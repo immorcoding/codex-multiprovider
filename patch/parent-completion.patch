@@ -1,0 +1,1658 @@
+diff --git a/codex-rs/app-server/tests/suite/v2/mod.rs b/codex-rs/app-server/tests/suite/v2/mod.rs
+index 51f3e06..698940d 100644
+--- a/codex-rs/app-server/tests/suite/v2/mod.rs
++++ b/codex-rs/app-server/tests/suite/v2/mod.rs
+@@ -85,6 +85,7 @@ mod model_provider_enforcement;
+ mod multi_agent_v2_developer_instructions;
+ mod otel;
+ mod output_schema;
++mod parent_completion_wake;
+ mod permission_profile_list;
+ mod plan_item;
+ mod plugin_install;
+diff --git a/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
+new file mode 100644
+index 0000000..f964b0a
+--- /dev/null
++++ b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
+@@ -0,0 +1,546 @@
++//! Parent completion delivery is observable through the app-server turn stream.
++
++use anyhow::Result;
++use app_test_support::MockResponsesConfig;
++use app_test_support::TestAppServer;
++use app_test_support::write_models_cache;
++use codex_app_server_protocol::ClientRequest;
++use codex_app_server_protocol::ThreadStartParams;
++use codex_app_server_protocol::TurnCompletedNotification;
++use codex_app_server_protocol::TurnInterruptParams;
++use codex_app_server_protocol::TurnInterruptResponse;
++use codex_app_server_protocol::TurnStartParams;
++use codex_app_server_protocol::TurnStartResponse;
++use codex_app_server_protocol::TurnStartedNotification;
++use codex_app_server_protocol::TurnStatus;
++use codex_app_server_protocol::UserInput;
++use core_test_support::responses;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use std::time::Duration;
++use tempfile::TempDir;
++use tokio::time::timeout;
++
++const PARENT_PROMPT: &str = "spawn the completion worker";
++const CHILD_PROMPT: &str = "finish the completion task";
++const SPAWN_CALL_ID: &str = "completion-spawn";
++const NEXT_USER_PROMPT: &str = "read the queued completion";
++
++#[test_case::test_case(true, false; "completed_wake")]
++#[test_case::test_case(true, true; "errored_wake")]
++#[test_case::test_case(false, false; "completed_queued")]
++#[test_case::test_case(false, true; "errored_queued")]
++#[tokio::test]
++async fn terminal_child_obeys_parent_wake_switch(wake_enabled: bool, error: bool) -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(PARENT_PROMPT) && !body.contains(SPAWN_CALL_ID)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-spawn"),
++            responses::ev_function_call_with_namespace(
++                SPAWN_CALL_ID,
++                "collaboration",
++                "spawn_agent",
++                &serde_json::to_string(&json!({
++                    "message": CHILD_PROMPT,
++                    "task_name": "worker",
++                    "fork_turns": "none",
++                }))?,
++            ),
++            responses::ev_completed("parent-spawn"),
++        ]),
++    )
++    .await;
++    let parent_finished = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(SPAWN_CALL_ID) && !body.contains("Message Type: FINAL_ANSWER")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-finished"),
++            responses::ev_assistant_message("parent-message", "parent waiting"),
++            responses::ev_completed("parent-finished"),
++        ]),
++    )
++    .await;
++    let child_events = if error {
++        vec![responses::ev_response_created("child-finished")]
++    } else {
++        vec![
++            responses::ev_response_created("child-finished"),
++            responses::ev_assistant_message("child-message", "child done"),
++            responses::ev_completed("child-finished"),
++        ]
++    };
++    let child = responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| String::from_utf8_lossy(&request.body).contains(CHILD_PROMPT),
++        responses::sse_response(responses::sse(child_events)).set_delay(Duration::from_millis(750)),
++    )
++    .await;
++    let expected_payload = if error {
++        "Agent errored:"
++    } else {
++        "child done"
++    };
++    let wake = responses::mount_sse_once_match(
++        &server,
++        move |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains("Message Type: FINAL_ANSWER") && body.contains(expected_payload)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-woken"),
++            responses::ev_assistant_message("wake-message", "parent resumed"),
++            responses::ev_completed("parent-woken"),
++        ]),
++    )
++    .await;
++
++    let codex_home = TempDir::new()?;
++    MockResponsesConfig::new(&server.uri())
++        .with_extra_config(&format!(
++            "[features.multi_agent_v2]\nenabled = true\n[agents]\nwake_parent_on_completion = {wake_enabled}"
++        ))
++        .write(codex_home.path())?;
++    write_models_cache(codex_home.path()).await?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .build_initialized()
++        .await?;
++    let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
++    let initial = timeout(
++        Duration::from_secs(25),
++        app.start_turn_and_wait_for_completion(TurnStartParams {
++            thread_id: parent.id.clone(),
++            input: vec![UserInput::Text {
++                text: PARENT_PROMPT.to_string(),
++                text_elements: Vec::new(),
++            }],
++            ..Default::default()
++        }),
++    )
++    .await??;
++    let next_turn_id = if wake_enabled {
++        let started = timeout(
++            Duration::from_secs(10),
++            app.read_stream_until_matching_notification("parent wake", |notification| {
++                notification.method == "turn/started"
++                    && notification.params.as_ref().is_some_and(|params| {
++                        params["threadId"] == parent.id && params["turn"]["id"] != initial.turn.id
++                    })
++            }),
++        )
++        .await??;
++        let started: TurnStartedNotification =
++            serde_json::from_value(started.params.expect("turn start params"))?;
++        timeout(
++            Duration::from_secs(10),
++            app.read_stream_until_matching_notification("parent wake completion", |notification| {
++                notification.method == "turn/completed"
++                    && notification.params.as_ref().is_some_and(|params| {
++                        params["threadId"] == parent.id && params["turn"]["id"] == started.turn.id
++                    })
++            }),
++        )
++        .await??;
++        started.turn.id
++    } else {
++        timeout(
++            Duration::from_secs(10),
++            app.read_stream_until_matching_notification("child completion", |notification| {
++                notification.method == "turn/completed"
++                    && notification
++                        .params
++                        .as_ref()
++                        .is_some_and(|params| params["threadId"] != parent.id)
++            }),
++        )
++        .await??;
++        assert!(
++            timeout(
++                Duration::from_millis(400),
++                app.read_stream_until_matching_notification(
++                    "unexpected parent wake",
++                    |notification| {
++                        notification.method == "turn/started"
++                            && notification.params.as_ref().is_some_and(|params| {
++                                params["threadId"] == parent.id
++                                    && params["turn"]["id"] != initial.turn.id
++                            })
++                    }
++                ),
++            )
++            .await
++            .is_err()
++        );
++        timeout(
++            Duration::from_secs(10),
++            app.start_turn_and_wait_for_completion(TurnStartParams {
++                thread_id: parent.id.clone(),
++                input: vec![UserInput::Text {
++                    text: NEXT_USER_PROMPT.to_string(),
++                    text_elements: Vec::new(),
++                }],
++                ..Default::default()
++            }),
++        )
++        .await??
++        .turn
++        .id
++    };
++    assert_eq!(child.requests().len(), 1);
++    assert_eq!(wake.requests().len(), 1);
++    assert_eq!(parent_spawn.requests().len(), 1);
++    assert_eq!(parent_finished.requests().len(), 1);
++    assert!(
++        timeout(
++            Duration::from_millis(300),
++            app.read_stream_until_matching_notification(
++                "unexpected extra parent turn",
++                |notification| {
++                    notification.method == "turn/started"
++                        && notification.params.as_ref().is_some_and(|params| {
++                            params["threadId"] == parent.id
++                                && params["turn"]["id"] != initial.turn.id
++                                && params["turn"]["id"] != next_turn_id
++                        })
++                }
++            ),
++        )
++        .await
++        .is_err()
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn interrupted_child_notifies_and_wakes_idle_parent_once() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(PARENT_PROMPT) && !body.contains(SPAWN_CALL_ID)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-spawn"),
++            responses::ev_function_call_with_namespace(
++                SPAWN_CALL_ID,
++                "collaboration",
++                "spawn_agent",
++                &serde_json::to_string(&json!({
++                    "message": CHILD_PROMPT,
++                    "task_name": "worker",
++                    "fork_turns": "none",
++                }))?,
++            ),
++            responses::ev_completed("parent-spawn"),
++        ]),
++    )
++    .await;
++    let parent_finished = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(SPAWN_CALL_ID) && !body.contains("Message Type: FINAL_ANSWER")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-finished"),
++            responses::ev_assistant_message("parent-message", "parent waiting"),
++            responses::ev_completed("parent-finished"),
++        ]),
++    )
++    .await;
++    let child = responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| String::from_utf8_lossy(&request.body).contains(CHILD_PROMPT),
++        responses::sse_response(responses::sse(vec![
++            responses::ev_response_created("child-finished"),
++            responses::ev_assistant_message("child-message", "too late"),
++            responses::ev_completed("child-finished"),
++        ]))
++        .set_delay(Duration::from_secs(8)),
++    )
++    .await;
++    let wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains("Message Type: FINAL_ANSWER") && body.contains("Agent interrupted.")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-woken"),
++            responses::ev_assistant_message("wake-message", "parent saw interruption"),
++            responses::ev_completed("parent-woken"),
++        ]),
++    )
++    .await;
++
++    let codex_home = TempDir::new()?;
++    MockResponsesConfig::new(&server.uri())
++        .with_extra_config("[features.multi_agent_v2]\nenabled = true")
++        .write(codex_home.path())?;
++    write_models_cache(codex_home.path()).await?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .build_initialized()
++        .await?;
++    let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
++    let initial = timeout(
++        Duration::from_secs(25),
++        app.start_turn_and_wait_for_completion(TurnStartParams {
++            thread_id: parent.id.clone(),
++            input: vec![UserInput::Text {
++                text: PARENT_PROMPT.to_string(),
++                text_elements: Vec::new(),
++            }],
++            ..Default::default()
++        }),
++    )
++    .await??;
++    timeout(Duration::from_secs(5), async {
++        loop {
++            if child.requests().len() == 1 {
++                break;
++            }
++            tokio::task::yield_now().await;
++        }
++    })
++    .await?;
++    let child_started = timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("child turn started", |notification| {
++            notification.method == "turn/started"
++                && notification
++                    .params
++                    .as_ref()
++                    .is_some_and(|params| params["threadId"] != parent.id)
++        }),
++    )
++    .await??;
++    let child_started: TurnStartedNotification =
++        serde_json::from_value(child_started.params.expect("child turn start params"))?;
++    let _: TurnInterruptResponse = app
++        .request(|request_id| ClientRequest::TurnInterrupt {
++            request_id,
++            params: TurnInterruptParams {
++                thread_id: child_started.thread_id.clone(),
++                turn_id: child_started.turn.id,
++            },
++        })
++        .await?;
++    let interrupted = timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("child interrupted", |notification| {
++            notification.method == "turn/completed"
++                && notification
++                    .params
++                    .as_ref()
++                    .is_some_and(|params| params["threadId"] == child_started.thread_id)
++        }),
++    )
++    .await??;
++    let interrupted: TurnCompletedNotification =
++        serde_json::from_value(interrupted.params.expect("child completion params"))?;
++    assert_eq!(interrupted.turn.status, TurnStatus::Interrupted);
++    let parent_wake = timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("parent wake", |notification| {
++            notification.method == "turn/started"
++                && notification.params.as_ref().is_some_and(|params| {
++                    params["threadId"] == parent.id && params["turn"]["id"] != initial.turn.id
++                })
++        }),
++    )
++    .await??;
++    let parent_wake: TurnStartedNotification =
++        serde_json::from_value(parent_wake.params.expect("parent wake params"))?;
++    timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("parent wake completed", |notification| {
++            notification.method == "turn/completed"
++                && notification.params.as_ref().is_some_and(|params| {
++                    params["threadId"] == parent.id && params["turn"]["id"] == parent_wake.turn.id
++                })
++        }),
++    )
++    .await??;
++    assert_eq!(wake.requests().len(), 1);
++    assert_eq!(parent_spawn.requests().len(), 1);
++    assert_eq!(parent_finished.requests().len(), 1);
++    Ok(())
++}
++
++#[tokio::test]
++async fn completed_child_during_parent_turn_does_not_start_another_turn() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    let parent_spawn = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(PARENT_PROMPT) && !body.contains(SPAWN_CALL_ID)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-spawn"),
++            responses::ev_function_call_with_namespace(
++                SPAWN_CALL_ID,
++                "collaboration",
++                "spawn_agent",
++                &serde_json::to_string(&json!({
++                    "message": CHILD_PROMPT,
++                    "task_name": "worker",
++                    "fork_turns": "none",
++                }))?,
++            ),
++            responses::ev_completed("parent-spawn"),
++        ]),
++    )
++    .await;
++    let parent_finished = responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(SPAWN_CALL_ID) && !body.contains("Message Type: FINAL_ANSWER")
++        },
++        responses::sse_response(responses::sse(vec![
++            responses::ev_response_created("parent-busy"),
++            responses::ev_assistant_message("parent-message", "parent finished other work"),
++            responses::ev_completed("parent-busy"),
++        ]))
++        .set_delay(Duration::from_secs(2)),
++    )
++    .await;
++    responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| String::from_utf8_lossy(&request.body).contains(CHILD_PROMPT),
++        responses::sse_response(responses::sse(vec![
++            responses::ev_response_created("child-finished"),
++            responses::ev_assistant_message("child-message", "child done"),
++            responses::ev_completed("child-finished"),
++        ]))
++        .set_delay(Duration::from_millis(250)),
++    )
++    .await;
++    let completion_request = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains("Message Type: FINAL_ANSWER") && body.contains("child done")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-read-completion"),
++            responses::ev_assistant_message("parent-read-message", "parent saw child"),
++            responses::ev_completed("parent-read-completion"),
++        ]),
++    )
++    .await;
++
++    let codex_home = TempDir::new()?;
++    MockResponsesConfig::new(&server.uri())
++        .with_extra_config(
++            "[features.multi_agent_v2]\nenabled = true\n[agents]\nwake_parent_on_completion = true",
++        )
++        .write(codex_home.path())?;
++    write_models_cache(codex_home.path()).await?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .build_initialized()
++        .await?;
++    let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
++    let TurnStartResponse { turn } = app
++        .request(|request_id| ClientRequest::TurnStart {
++            request_id,
++            params: TurnStartParams {
++                thread_id: parent.id.clone(),
++                input: vec![UserInput::Text {
++                    text: PARENT_PROMPT.to_string(),
++                    text_elements: Vec::new(),
++                }],
++                ..Default::default()
++            },
++        })
++        .await?;
++    timeout(
++        Duration::from_secs(10),
++        app.read_stream_until_matching_notification(
++            "child finished during parent turn",
++            |notification| {
++                notification.method == "turn/completed"
++                    && notification
++                        .params
++                        .as_ref()
++                        .is_some_and(|params| params["threadId"] != parent.id)
++            },
++        ),
++    )
++    .await??;
++    assert!(
++        timeout(
++            Duration::from_millis(100),
++            app.read_stream_until_matching_notification("parent still busy", |notification| {
++                notification.method == "turn/completed"
++                    && notification.params.as_ref().is_some_and(|params| {
++                        params["threadId"] == parent.id && params["turn"]["id"] == turn.id
++                    })
++            }),
++        )
++        .await
++        .is_err()
++    );
++    timeout(
++        Duration::from_secs(10),
++        app.read_stream_until_matching_notification("parent turn completed", |notification| {
++            notification.method == "turn/completed"
++                && notification.params.as_ref().is_some_and(|params| {
++                    params["threadId"] == parent.id && params["turn"]["id"] == turn.id
++                })
++        }),
++    )
++    .await??;
++    assert!(
++        timeout(
++            Duration::from_millis(400),
++            app.read_stream_until_matching_notification(
++                "unexpected extra parent turn",
++                |notification| {
++                    notification.method == "turn/started"
++                        && notification.params.as_ref().is_some_and(|params| {
++                            params["threadId"] == parent.id && params["turn"]["id"] != turn.id
++                        })
++                }
++            ),
++        )
++        .await
++        .is_err()
++    );
++    if completion_request.requests().is_empty() {
++        timeout(
++            Duration::from_secs(10),
++            app.start_turn_and_wait_for_completion(TurnStartParams {
++                thread_id: parent.id.clone(),
++                input: vec![UserInput::Text {
++                    text: NEXT_USER_PROMPT.to_string(),
++                    text_elements: Vec::new(),
++                }],
++                ..Default::default()
++            }),
++        )
++        .await??;
++    } else {
++        let request = completion_request.single_request();
++        assert_eq!(
++            request.body_json()["client_metadata"]["turn_id"],
++            json!(turn.id)
++        );
++    }
++    assert_eq!(completion_request.requests().len(), 1);
++    assert_eq!(parent_spawn.requests().len(), 1);
++    assert_eq!(parent_finished.requests().len(), 1);
++    Ok(())
++}
+diff --git a/codex-rs/config/src/config_toml.rs b/codex-rs/config/src/config_toml.rs
+index 3369f46..d5cb566 100644
+--- a/codex-rs/config/src/config_toml.rs
++++ b/codex-rs/config/src/config_toml.rs
+@@ -727,6 +727,8 @@ pub struct AgentsToml {
+     /// Whether to record a model-visible message when an agent turn is interrupted.
+     /// Defaults to true.
+     pub interrupt_message: Option<bool>,
++    /// Whether a terminal child turn wakes an idle parent. Defaults to true.
++    pub wake_parent_on_completion: Option<bool>,
+ 
+     /// User-defined role declarations keyed by role name.
+     ///
+diff --git a/codex-rs/core/config.schema.json b/codex-rs/core/config.schema.json
+index f653c99..1542518 100644
+--- a/codex-rs/core/config.schema.json
++++ b/codex-rs/core/config.schema.json
+@@ -66,6 +66,10 @@
+           "description": "Maximum nesting depth for V1 agent threads. Ignored by V2.",
+           "format": "int32",
+           "type": "integer"
++        },
++        "wake_parent_on_completion": {
++          "description": "Whether a terminal child turn wakes an idle parent. Defaults to true.",
++          "type": "boolean"
+         }
+       },
+       "type": "object"
+diff --git a/codex-rs/core/src/agent/api.rs b/codex-rs/core/src/agent/api.rs
+index e2ef8de..6e6c772 100644
+--- a/codex-rs/core/src/agent/api.rs
++++ b/codex-rs/core/src/agent/api.rs
+@@ -225,6 +225,7 @@ pub struct AgentTurnOutcome {
+     pub parent_turn_id: Option<String>,
+     pub initiating_agent_path: Option<AgentPath>,
+     pub status: AgentStatus,
++    pub wake_parent_on_completion: bool,
+ }
+ 
+ /// Settings shared by the tree. A service tier of `None` restores the default tier.
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index 705d48c..f60de17 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -175,6 +175,7 @@ impl LocalAgentControl {
+             communication,
+             agent_communication_context,
+             start_options,
++            /*wake_if_idle*/ false,
+         )
+         .await
+     }
+@@ -235,6 +236,7 @@ impl LocalAgentControl {
+         communication: InterAgentCommunication,
+         context: AgentCommunicationContext,
+         start_options: TurnStartOptions,
++        wake_if_idle: bool,
+     ) -> CodexResult<String> {
+         self.submit_inter_agent_communication(
+             agent_id,
+@@ -242,6 +244,7 @@ impl LocalAgentControl {
+             communication,
+             context,
+             start_options,
++            wake_if_idle,
+         )
+         .await
+     }
+@@ -253,6 +256,7 @@ impl LocalAgentControl {
+         communication: InterAgentCommunication,
+         context: AgentCommunicationContext,
+         start_options: TurnStartOptions,
++        wake_if_idle: bool,
+     ) -> CodexResult<String> {
+         let communication_for_log =
+             crate::agent_communication::logging_enabled().then(|| communication.clone());
+@@ -274,6 +278,7 @@ impl LocalAgentControl {
+                         Op::InterAgentCommunication {
+                             communication,
+                             start_options,
++                            wake_if_idle,
+                         },
+                         parent_turn_id,
+                         root_turn_id,
+@@ -428,15 +433,15 @@ impl LocalAgentControl {
+         session_source: Option<SessionSource>,
+         child_reference: String,
+         child_agent_path: Option<AgentPath>,
+-    ) {
++    ) -> Option<tokio::task::JoinHandle<()>> {
+         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+             parent_thread_id, ..
+         })) = session_source
+         else {
+-            return;
++            return None;
+         };
+         let control = self.clone();
+-        tokio::spawn(async move {
++        Some(tokio::spawn(async move {
+             let status = match control.subscribe_status(child_thread_id).await {
+                 Ok(mut updates) => {
+                     let mut final_status = None;
+@@ -463,13 +468,14 @@ impl LocalAgentControl {
+                 return;
+             };
+             let child_thread = state.get_thread(child_thread_id).await.ok();
+-            let child_uses_multi_agent_v2 = match child_thread.as_ref() {
+-                Some(child_thread) => {
+-                    child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+-                }
+-                None => true,
+-            };
+-            if child_agent_path.is_some() && child_uses_multi_agent_v2 {
++            // MultiAgentV2 forwards its own terminal turn event. A detached legacy
++            // watcher must never deliver that same result a second time.
++            if child_thread.as_ref().is_some_and(|child_thread| {
++                child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
++            }) {
++                return;
++            }
++            if child_agent_path.is_some() && child_thread.is_none() {
+                 let Some(child_agent_path) = child_agent_path.clone() else {
+                     return;
+                 };
+@@ -515,7 +521,7 @@ impl LocalAgentControl {
+                     status,
+                 ))
+                 .await;
+-        });
++        }))
+     }
+ 
+     fn prepare_agent_metadata(
+diff --git a/codex-rs/core/src/agent/control/completion.rs b/codex-rs/core/src/agent/control/completion.rs
+index 0f09257..42627d9 100644
+--- a/codex-rs/core/src/agent/control/completion.rs
++++ b/codex-rs/core/src/agent/control/completion.rs
+@@ -95,6 +95,22 @@ impl LocalAgentControl {
+         // `communication` owns the message. Keep a second copy only when the
+         // recorder will actually need it after parent delivery succeeds.
+         let trace_message = trace.is_enabled().then(|| message.clone());
++        let wake_if_idle = if outcome.wake_parent_on_completion {
++            match self.runtime.upgrade() {
++                Ok(state) => match state.get_thread(parent_thread_id).await {
++                    // Wake admission is best effort. A full execution budget must not
++                    // prevent the terminal result from entering the parent's mailbox.
++                    Ok(parent) => parent
++                        .ensure_execution_capacity_for_turn_start(self)
++                        .await
++                        .is_ok(),
++                    Err(_) => false,
++                },
++                Err(_) => false,
++            }
++        } else {
++            false
++        };
+         let communication = InterAgentCommunication::new(
+             child_agent_path.clone(),
+             parent_agent_path,
+@@ -104,15 +120,20 @@ impl LocalAgentControl {
+         );
+         let context =
+             AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
+-        if let Err(err) = self
+-            .send_inter_agent_communication(
++        let delivery = async {
++            let state = self.runtime.upgrade()?;
++            self.send_inter_agent_communication_after_capacity_check(
+                 parent_thread_id,
++                &state,
+                 communication,
+                 context,
+                 TurnStartOptions::default(),
++                wake_if_idle,
+             )
+             .await
+-        {
++        }
++        .await;
++        if let Err(err) = delivery {
+             debug!("failed to notify parent thread {parent_thread_id}: {err}");
+             return;
+         }
+diff --git a/codex-rs/core/src/agent/control/residency.rs b/codex-rs/core/src/agent/control/residency.rs
+index f1041c9..afbb134 100644
+--- a/codex-rs/core/src/agent/control/residency.rs
++++ b/codex-rs/core/src/agent/control/residency.rs
+@@ -170,7 +170,7 @@ impl V2Residency {
+                 .get_thread(candidate_thread_id)
+                 .await
+                 .is_ok_and(|registered| Arc::ptr_eq(&registered, &candidate_thread))
+-                || !is_unloadable(candidate_thread.as_ref()).await
++                || !is_unloadable(manager.as_ref(), candidate_thread.as_ref()).await
+             {
+                 continue;
+             }
+@@ -263,7 +263,17 @@ pub(super) fn is_v2_resident_session_source(session_source: &SessionSource) -> b
+     matches!(session_source, SessionSource::SubAgent(_))
+ }
+ 
+-async fn is_unloadable(thread: &CodexThread) -> bool {
++async fn is_unloadable(manager: &ThreadManagerState, thread: &CodexThread) -> bool {
++    // A terminal nested parent still owns the mailbox for its resident children.
++    // Evicting it before a child reports its terminal result silently loses that
++    // result; evict a terminal child first, or refuse the new reservation.
++    let thread_id = thread.session.thread_id;
++    if manager.threads.read().await.values().any(|resident| {
++        resident.multi_agent_version() == Some(MultiAgentVersion::V2)
++            && resident.session_source.parent_thread_id() == Some(thread_id)
++    }) {
++        return false;
++    }
+     matches!(
+         thread.agent_status().await,
+         AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
+diff --git a/codex-rs/core/src/agent/control/residency_tests.rs b/codex-rs/core/src/agent/control/residency_tests.rs
+index 6f2cc44..c20ded8 100644
+--- a/codex-rs/core/src/agent/control/residency_tests.rs
++++ b/codex-rs/core/src/agent/control/residency_tests.rs
+@@ -7,6 +7,7 @@ use crate::config::test_config;
+ use crate::thread_manager::ThreadManagerState;
+ use codex_features::Feature;
+ use codex_login::CodexAuth;
++use codex_protocol::AgentPath;
+ use codex_protocol::ThreadId;
+ use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::protocol::EventMsg;
+@@ -70,6 +71,97 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
+     assert!(manager.get_thread(second.thread_id).await.is_ok());
+ }
+ 
++#[test]
++fn residency_keeps_nested_parent_loaded_while_child_is_resident() {
++    // Nested thread construction exceeds the Windows test harness's small stack.
++    std::thread::Builder::new()
++        .stack_size(16 * 1024 * 1024)
++        .spawn(|| {
++            tokio::runtime::Builder::new_current_thread()
++                .enable_all()
++                .build()
++                .expect("test runtime")
++                .block_on(check_nested_parent_residency());
++        })
++        .expect("test thread")
++        .join()
++        .expect("nested residency test");
++}
++
++async fn check_nested_parent_residency() {
++    let mut config = test_config().await;
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    config.multi_agent_v2.max_concurrent_threads_per_session = 3;
++    let temp_home = tempfile::tempdir().expect("create temp home");
++    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
++    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
++    let manager = ThreadManager::with_models_provider_and_home_for_tests(
++        CodexAuth::from_api_key("dummy"),
++        config.model_provider.clone(),
++        config.codex_home.to_path_buf(),
++        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
++    );
++    let root = manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("start root thread");
++    let control = manager.agent_control();
++    let state = control
++        .runtime
++        .upgrade()
++        .expect("thread manager should be live");
++
++    let parent_slot = control
++        .reserve_v2_residency_slot(&state, &config, None)
++        .await
++        .expect("parent resident slot");
++    let parent =
++        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker").await;
++    parent_slot.commit(parent.thread_id);
++
++    let child_slot = control
++        .reserve_v2_residency_slot(&state, &config, None)
++        .await
++        .expect("child resident slot");
++    let child = Box::pin(state.spawn_new_thread_with_source(
++        config.clone(),
++        control.clone(),
++        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: parent.thread_id,
++            depth: 2,
++            agent_path: Some(AgentPath::try_from("/root/worker/grandchild").unwrap()),
++            agent_nickname: None,
++            agent_role: None,
++        }),
++        None,
++        Some(parent.thread_id),
++        None,
++        Some(ThreadSource::Subagent),
++        None,
++        None,
++        None,
++        None,
++    ))
++    .await
++    .expect("spawn nested child");
++    child_slot.commit(child.thread_id);
++    mark_thread_completed(parent.thread.as_ref()).await;
++
++    let err = match control
++        .reserve_v2_residency_slot(&state, &config, None)
++        .await
++    {
++        Ok(_) => panic!("nested parent must remain resident until child reports completion"),
++        Err(err) => err,
++    };
++    assert!(matches!(
++        err.details(),
++        CodexErrorDetails::AgentLimitReached { .. }
++    ));
++    assert!(manager.get_thread(parent.thread_id).await.is_ok());
++    assert!(manager.get_thread(child.thread_id).await.is_ok());
++}
++
+ #[tokio::test]
+ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
+     let mut config = test_config().await;
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 9b64298..5ff5ec7 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -582,10 +582,22 @@ impl LocalAgentControl {
+                     ..Default::default()
+                 })
+         };
+-        // Reserving a slot can evict an idle nested parent. Capture its instructions
+-        // alongside its authority so the child does not depend on a later live lookup.
++        // Another reservation can run between our reservation and the child's publication.
++        // Pin a loaded parent through publication so that it keeps the result mailbox.
++        let parent_to_pin = if let Some((parent, _)) = parent.as_ref() {
++            Some(Arc::clone(parent))
++        } else if let Some(parent_thread_id) = parent_thread_id {
++            state.get_thread(parent_thread_id).await.ok()
++        } else {
++            None
++        };
++        let _parent_residency_pin = match parent_to_pin {
++            Some(parent) => self.runtime.pin_v2_residency(&state, &parent).await?,
++            None => None,
++        };
++        // A previously evicted parent's absence cannot be repaired by this reload.
+         let residency_slot = self
+-            .reserve_v2_residency_slot(&state, &config, Some(thread_id))
++            .reserve_v2_residency_slot(&state, &config, parent_thread_id.or(Some(thread_id)))
+             .await?;
+ 
+         match state
+@@ -850,6 +862,7 @@ impl LocalAgentControl {
+                     communication,
+                     context,
+                     start_options,
++                    /*wake_if_idle*/ false,
+                 )
+                 .await?;
+             }
+@@ -871,7 +884,7 @@ impl LocalAgentControl {
+                 .as_ref()
+                 .map(ToString::to_string)
+                 .unwrap_or_else(|| new_thread.thread_id.to_string());
+-            self.maybe_start_completion_watcher(
++            let _ = self.maybe_start_completion_watcher(
+                 new_thread.thread_id,
+                 notification_source,
+                 child_reference,
+@@ -1414,7 +1427,7 @@ impl LocalAgentControl {
+                 .as_ref()
+                 .map(ToString::to_string)
+                 .unwrap_or_else(|| resumed_thread.thread_id.to_string());
+-            self.maybe_start_completion_watcher(
++            let _ = self.maybe_start_completion_watcher(
+                 resumed_thread.thread_id,
+                 Some(notification_source.clone()),
+                 child_reference,
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index ceaeaa3..fcb8df4 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -6,6 +6,7 @@ use crate::agent::agent_status_from_event;
+ use crate::agent::api::AgentControl;
+ use crate::agent::api::AgentInfo;
+ use crate::agent::api::AgentInput;
++use crate::agent::api::AgentTurnOutcome;
+ use crate::agent::api::SpawnRequest;
+ use crate::agent::next_thread_spawn_depth;
+ use crate::agent::types::AgentMessage;
+@@ -791,6 +792,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
+         Op::InterAgentCommunication {
+             communication: communication.clone(),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         },
+     );
+     let captured = harness
+@@ -1109,6 +1111,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
+         Op::InterAgentCommunication {
+             communication,
+             start_options: Default::default(),
++            wake_if_idle: false,
+         },
+     );
+     let captured = harness
+@@ -4139,7 +4142,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
+ }
+ 
+ #[tokio::test]
+-async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
++async fn multi_agent_v2_detached_watcher_does_not_duplicate_terminal_delivery() {
+     let harness = AgentControlHarness::new().await;
+     let (_root_thread_id, root_thread) = harness.start_thread().await;
+     let (worker_thread_id, _worker_thread) = harness.start_thread().await;
+@@ -4158,18 +4161,21 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
+         .expect("tester thread should exist");
+     let worker_path = AgentPath::root().join("worker_a").expect("worker path");
+     let tester_path = worker_path.join("tester").expect("tester path");
+-    harness.control.maybe_start_completion_watcher(
+-        tester_thread_id,
+-        Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+-            parent_thread_id: worker_thread_id,
+-            depth: 2,
+-            agent_path: Some(tester_path.clone()),
+-            agent_nickname: None,
+-            agent_role: Some("explorer".to_string()),
+-        })),
+-        tester_path.to_string(),
+-        Some(tester_path.clone()),
+-    );
++    let watcher = harness
++        .control
++        .maybe_start_completion_watcher(
++            tester_thread_id,
++            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                parent_thread_id: worker_thread_id,
++                depth: 2,
++                agent_path: Some(tester_path.clone()),
++                agent_nickname: None,
++                agent_role: Some("explorer".to_string()),
++            })),
++            tester_path.to_string(),
++            Some(tester_path.clone()),
++        )
++        .expect("start legacy watcher for collision test");
+     let tester_turn = tester_thread.session.new_default_turn().await;
+     tester_thread
+         .session
+@@ -4187,41 +4193,56 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
+         )
+         .await;
+ 
++    // Race the legacy watcher against the V2 terminal callback for the same turn.
++    harness
++        .control
++        .notify_parent_of_terminal_turn(
++            AgentTurnOutcome {
++                thread_id: tester_thread_id,
++                turn_id: tester_turn.sub_id.clone(),
++                source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                    parent_thread_id: worker_thread_id,
++                    depth: 2,
++                    agent_path: Some(tester_path.clone()),
++                    agent_nickname: None,
++                    agent_role: None,
++                }),
++                parent_turn_id: None,
++                initiating_agent_path: None,
++                status: AgentStatus::Completed(Some("done".to_string())),
++                wake_parent_on_completion: true,
++            },
++            &tester_thread.session.services.rollout_thread_trace,
++        )
++        .await;
++
+     let expected_message = crate::session_prefix::format_inter_agent_completion_message(
+         worker_path.clone(),
+         tester_path.clone(),
+         &AgentStatus::Completed(Some("done".to_string())),
+     )
+     .expect("completed status should render");
+-    let expected = (
+-        worker_thread_id,
+-        Op::InterAgentCommunication {
+-            communication: InterAgentCommunication::new(
+-                tester_path.clone(),
+-                worker_path.clone(),
+-                Vec::new(),
+-                expected_message.clone(),
+-                /*trigger_turn*/ false,
+-            ),
+-            start_options: Default::default(),
+-        },
+-    );
+-
+-    timeout(Duration::from_secs(5), async {
+-        loop {
+-            let captured = harness
+-                .manager
+-                .captured_ops()
+-                .into_iter()
+-                .find(|entry| captured_op_matches(entry, &expected));
+-            if captured.is_some() {
+-                break;
++    timeout(Duration::from_secs(5), watcher)
++        .await
++        .expect("watcher should observe the terminal status")
++        .expect("watcher should exit normally");
++    let notifications = harness
++        .manager
++        .captured_ops()
++        .into_iter()
++        .filter_map(|(id, op)| match op {
++            Op::InterAgentCommunication { communication, .. }
++                if id == worker_thread_id
++                    && communication.author == tester_path
++                    && communication.recipient == worker_path =>
++            {
++                Some(communication)
+             }
+-            sleep(Duration::from_millis(10)).await;
+-        }
+-    })
+-    .await
+-    .expect("completion watcher should queue a direct-parent message");
++            _ => None,
++        })
++        .collect::<Vec<_>>();
++    assert_eq!(notifications.len(), 1);
++    assert_eq!(notifications[0].content, expected_message);
+ 
+     let root_history = root_thread.session.clone_history().await;
+     assert!(!history_contains_assistant_inter_agent_communication(
+@@ -4236,13 +4257,116 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
+     ));
+ }
+ 
++#[tokio::test]
++async fn multi_agent_v2_completion_queues_for_idle_parent_when_execution_is_full() {
++    let harness = AgentControlHarness::new().await;
++    let mut config = harness.config.clone();
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    config.agent_wake_parent_on_completion = true;
++    let root = harness
++        .manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("start root");
++    let control = harness
++        .control
++        .clone()
++        .with_session_id(Default::default(), /*max_threads*/ 1);
++    let state = control.runtime.upgrade().expect("manager should be live");
++    let parent_path = AgentPath::try_from("/root/worker").expect("parent path");
++    let parent = Box::pin(state.spawn_new_thread_with_source(
++        config,
++        control.clone(),
++        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: root.thread_id,
++            depth: 1,
++            agent_path: Some(parent_path.clone()),
++            agent_nickname: None,
++            agent_role: None,
++        }),
++        None,
++        Some(root.thread_id),
++        None,
++        Some(ThreadSource::Subagent),
++        None,
++        None,
++        None,
++        None,
++    ))
++    .await
++    .expect("start nested parent");
++    assert!(parent.thread.session.active_turn.lock().await.is_none());
++    let busy_source = SessionSource::SubAgent(SubAgentSource::Other("busy".to_string()));
++    let _capacity_guard = control
++        .execution_guard(MultiAgentVersion::V2, &busy_source)
++        .expect("occupy all non-root execution capacity");
++    let child_path = parent_path.join("child").expect("child path");
++    let child_id = ThreadId::new();
++    control
++        .notify_parent_of_terminal_turn(
++            AgentTurnOutcome {
++                thread_id: child_id,
++                turn_id: "child-terminal".to_string(),
++                source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                    parent_thread_id: parent.thread_id,
++                    depth: 2,
++                    agent_path: Some(child_path.clone()),
++                    agent_nickname: None,
++                    agent_role: None,
++                }),
++                parent_turn_id: None,
++                initiating_agent_path: None,
++                status: AgentStatus::Completed(Some("done".to_string())),
++                wake_parent_on_completion: true,
++            },
++            &parent.thread.session.services.rollout_thread_trace,
++        )
++        .await;
++
++    let notifications = harness
++        .manager
++        .captured_ops()
++        .into_iter()
++        .filter_map(|(id, op)| match op {
++            Op::InterAgentCommunication {
++                communication,
++                wake_if_idle,
++                ..
++            } if id == parent.thread_id && communication.author == child_path => {
++                Some((communication, wake_if_idle))
++            }
++            _ => None,
++        })
++        .collect::<Vec<_>>();
++    assert_eq!(notifications.len(), 1);
++    let (communication, wake_if_idle) = &notifications[0];
++    assert!(!communication.trigger_turn);
++    assert!(!wake_if_idle);
++    timeout(Duration::from_secs(5), async {
++        loop {
++            if parent
++                .thread
++                .session
++                .input_queue
++                .has_pending_mailbox_items()
++                .await
++            {
++                break;
++            }
++            sleep(Duration::from_millis(10)).await;
++        }
++    })
++    .await
++    .expect("full capacity must preserve the parent's queued result");
++}
++
+ #[tokio::test]
+ async fn completion_watcher_notifies_parent_when_child_is_missing() {
+     let harness = AgentControlHarness::new().await;
+     let (parent_thread_id, parent_thread) = harness.start_thread().await;
+     let child_thread_id = ThreadId::new();
+ 
+-    harness.control.maybe_start_completion_watcher(
++    let _ = harness.control.maybe_start_completion_watcher(
+         child_thread_id,
+         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+             parent_thread_id,
+diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
+index f91a288..c8b7018 100644
+--- a/codex-rs/core/src/config/config_tests.rs
++++ b/codex-rs/core/src/config/config_tests.rs
+@@ -8614,6 +8614,7 @@ async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9564,6 +9565,7 @@ async fn load_config_resolves_agent_controls() -> std::io::Result<()> {
+             default_subagent_model: Some("gpt-5.6-terra".to_string()),
+             default_subagent_reasoning_effort: Some(ReasoningEffort::High),
+             interrupt_message: Some(false),
++            wake_parent_on_completion: Some(false),
+             ..Default::default()
+         }),
+         ..Default::default()
+@@ -9583,6 +9585,7 @@ async fn load_config_resolves_agent_controls() -> std::io::Result<()> {
+             config.agent_default_subagent_model.as_deref(),
+             config.agent_default_subagent_reasoning_effort,
+             config.agent_interrupt_message_enabled,
++            config.agent_wake_parent_on_completion,
+         ),
+         (
+             false,
+@@ -9590,6 +9593,7 @@ async fn load_config_resolves_agent_controls() -> std::io::Result<()> {
+             Some("gpt-5.6-terra"),
+             Some(ReasoningEffort::High),
+             false,
++            false,
+         )
+     );
+ 
+@@ -9629,6 +9633,7 @@ async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Res
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9675,6 +9680,7 @@ async fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9715,6 +9721,7 @@ async fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9755,6 +9762,7 @@ async fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io:
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
+index a782af1..7e6e67b 100644
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -924,6 +924,9 @@ pub struct Config {
+     /// Whether to record a model-visible message when an agent turn is interrupted.
+     pub agent_interrupt_message_enabled: bool,
+ 
++    /// Whether a terminal child turn wakes an idle parent.
++    pub agent_wake_parent_on_completion: bool,
++
+     /// Maximum nesting depth for V1 agent threads. Ignored by V2.
+     pub agent_max_depth: i32,
+ 
+@@ -3892,6 +3895,11 @@ impl Config {
+             .as_ref()
+             .and_then(|agents| agents.interrupt_message)
+             .unwrap_or(true);
++        let agent_wake_parent_on_completion = cfg
++            .agents
++            .as_ref()
++            .and_then(|agents| agents.wake_parent_on_completion)
++            .unwrap_or(true);
+         let background_terminal_max_timeout = cfg
+             .background_terminal_max_timeout
+             .unwrap_or(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS)
+@@ -4360,6 +4368,7 @@ impl Config {
+                 .transpose()?,
+             memories: memories_config,
+             agent_interrupt_message_enabled,
++            agent_wake_parent_on_completion,
+             codex_home,
+             sqlite: codex_state::SqliteConfig::from_sqlite_home(sqlite_home),
+             log_dir,
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index cc8413a..12503f8 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -76,16 +76,30 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
+ 
+ /// Queues an inter-agent message, then lets the shared pending-work scheduler
+ /// decide whether an idle session should start a regular turn.
++#[expect(
++    clippy::await_holding_invalid_type,
++    reason = "completion idle check and mailbox enqueue must remain atomic with turn start"
++)]
+ pub async fn inter_agent_communication(
+     sess: &Arc<Session>,
+     sub_id: String,
+-    communication: InterAgentCommunication,
++    mut communication: InterAgentCommunication,
+     start_options: codex_protocol::turn_input::TurnStartOptions,
++    wake_if_idle: bool,
+ ) {
+-    let trigger_turn = communication.trigger_turn;
+-    sess.input_queue
+-        .enqueue_mailbox_communication(communication, start_options)
+-        .await;
++    let trigger_turn = {
++        // Serialize the completion's idle decision and enqueue with user turn starts.
++        // A result arriving during a turn must not request another turn afterwards.
++        let active_turn = sess.active_turn.lock().await;
++        if wake_if_idle && active_turn.is_none() {
++            communication.trigger_turn = true;
++        }
++        let trigger_turn = communication.trigger_turn;
++        sess.input_queue
++            .enqueue_mailbox_communication(communication, start_options)
++            .await;
++        trigger_turn
++    };
+     crate::agent_communication::emit_agent_communication_receive(&sub_id);
+     if trigger_turn || sess.has_outstanding_durable_sleep() {
+         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
+@@ -561,9 +575,16 @@ pub(super) async fn submission_loop(
+                 Op::InterAgentCommunication {
+                     communication,
+                     start_options,
++                    wake_if_idle,
+                 } => {
+-                    inter_agent_communication(&sess, sub.id.clone(), communication, start_options)
+-                        .await;
++                    inter_agent_communication(
++                        &sess,
++                        sub.id.clone(),
++                        communication,
++                        start_options,
++                        wake_if_idle,
++                    )
++                    .await;
+                     false
+                 }
+                 Op::ExecApproval {
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 6d1580b..efbadfe 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -2418,7 +2418,7 @@ impl Session {
+                 status
+             }
+         };
+-        if !is_final(&status) {
++        if !is_final(&status) && !matches!(status, AgentStatus::Interrupted) {
+             return;
+         }
+ 
+@@ -2435,6 +2435,7 @@ impl Session {
+                         .initiating_agent_path()
+                         .cloned(),
+                     status,
++                    wake_parent_on_completion: turn_context.config.agent_wake_parent_on_completion,
+                 },
+                 &self.services.rollout_thread_trace,
+             )
+diff --git a/codex-rs/core/src/session_prefix.rs b/codex-rs/core/src/session_prefix.rs
+index 315ef1c..bbe2339 100644
+--- a/codex-rs/core/src/session_prefix.rs
++++ b/codex-rs/core/src/session_prefix.rs
+@@ -30,7 +30,8 @@ pub(crate) fn format_inter_agent_completion_message(
+         }
+         AgentStatus::Shutdown => "Agent shut down.".to_string(),
+         AgentStatus::NotFound => "Agent was not found.".to_string(),
+-        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted => return None,
++        AgentStatus::Interrupted => "Agent interrupted.".to_string(),
++        AgentStatus::PendingInit | AgentStatus::Running => return None,
+     };
+     Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
+ }
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index ddaa1f1..e5a0d82 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -136,9 +136,11 @@ fn capture_test_op(op: &Op) -> Option<Op> {
+         Op::InterAgentCommunication {
+             communication,
+             start_options,
++            wake_if_idle,
+         } => Some(Op::InterAgentCommunication {
+             communication: communication.clone(),
+             start_options: start_options.clone(),
++            wake_if_idle: *wake_if_idle,
+         }),
+         Op::Shutdown => Some(Op::Shutdown),
+         _ => None,
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index 9c8268c..423d0bf 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -2138,7 +2138,7 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
+ }
+ 
+ #[tokio::test]
+-async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
++async fn multi_agent_v2_interrupted_turn_notifies_parent_once() {
+     let (mut session, mut turn) = make_session_and_context().await;
+     let manager = thread_manager();
+     let root = manager
+@@ -2176,6 +2176,7 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
+         .await
+         .expect("worker thread should exist");
+ 
++
+     let aborted_turn = thread.session.new_default_turn().await;
+     thread
+         .session
+@@ -2198,20 +2199,32 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
+             (id == root.thread_id)
+                 .then_some(op)
+                 .and_then(|op| match op {
+-                    Op::InterAgentCommunication { communication, .. }
+-                        if communication.author.as_str() == "/root/worker"
+-                            && communication.recipient == AgentPath::root()
+-                            && communication.other_recipients.is_empty()
+-                            && !communication.trigger_turn =>
++                    Op::InterAgentCommunication {
++                        communication,
++                        wake_if_idle,
++                        ..
++                    } if communication.author.as_str() == "/root/worker"
++                        && communication.recipient == AgentPath::root() =>
+                     {
+-                        Some(communication.content)
++                        Some((communication, wake_if_idle))
+                     }
+                     _ => None,
+                 })
+         })
+         .collect::<Vec<_>>();
+ 
+-    assert_eq!(notifications, Vec::<String>::new());
++    let expected = format_inter_agent_completion_message(
++        AgentPath::root(),
++        AgentPath::try_from("/root/worker").expect("worker path"),
++        &AgentStatus::Interrupted,
++    )
++    .expect("interrupted status should render");
++    assert_eq!(notifications.len(), 1);
++    let (communication, wake_if_idle) = &notifications[0];
++    assert_eq!(communication.content, expected);
++    assert!(communication.other_recipients.is_empty());
++    assert!(!communication.trigger_turn);
++    assert!(*wake_if_idle);
+ }
+ 
+ #[tokio::test]
+diff --git a/codex-rs/core/tests/suite/agent_execution.rs b/codex-rs/core/tests/suite/agent_execution.rs
+index 480b5bb..1bfca53 100644
+--- a/codex-rs/core/tests/suite/agent_execution.rs
++++ b/codex-rs/core/tests/suite/agent_execution.rs
+@@ -369,6 +369,8 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
+         .with_model("gpt-5.6-sol")
+         .with_exec_server_url("none")
+         .with_config(|config| {
++            // Keep completion wakeups from adding turns to this residency sequence.
++            config.agent_wake_parent_on_completion = false;
+             for feature in [Feature::Collab, Feature::MultiAgentV2] {
+                 config
+                     .features
+diff --git a/codex-rs/core/tests/suite/compact_remote.rs b/codex-rs/core/tests/suite/compact_remote.rs
+index 76032f3..c60e092 100644
+--- a/codex-rs/core/tests/suite/compact_remote.rs
++++ b/codex-rs/core/tests/suite/compact_remote.rs
+@@ -914,6 +914,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     let channel_progress = "Message Type: CHANNEL_POST\nSender: /root/child\nChannel: progress\nMessage ID: aaaabbbbcccc\nThread ID: aaaabbbbcccc\nPayload:\nchild channel progress";
+@@ -927,6 +928,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     codex
+@@ -939,6 +941,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     let delegated_task_ciphertext = format!("delegated compact task{}", "x".repeat(40_000));
+@@ -952,6 +955,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ true,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     wait_for_turn_complete(&codex).await;
+@@ -968,6 +972,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ true,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     wait_for_turn_complete(&codex).await;
+diff --git a/codex-rs/core/tests/suite/models_cache_auth.rs b/codex-rs/core/tests/suite/models_cache_auth.rs
+index 4521237..3d06472 100644
+--- a/codex-rs/core/tests/suite/models_cache_auth.rs
++++ b/codex-rs/core/tests/suite/models_cache_auth.rs
+@@ -202,6 +202,7 @@ async fn auth_rotation_refreshes_before_turn_with_best_effort(
+                         /*trigger_turn*/ true,
+                     ),
+                     start_options: Default::default(),
++                    wake_if_idle: false,
+                 })
+                 .await?;
+         }
+diff --git a/codex-rs/core/tests/suite/pending_input.rs b/codex-rs/core/tests/suite/pending_input.rs
+index 0453bf8..5ffff1c 100644
+--- a/codex-rs/core/tests/suite/pending_input.rs
++++ b/codex-rs/core/tests/suite/pending_input.rs
+@@ -387,6 +387,7 @@ async fn enqueue_queue_only_agent_mail(codex: &CodexThread, text: &str) {
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await
+         .expect("submit queue-only agent mail");
+@@ -1422,6 +1423,7 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
+                         /*trigger_turn*/ true,
+                     ),
+                     start_options: Default::default(),
++                    wake_if_idle: false,
+                 })
+                 .await?;
+             codex.submit(Op::RealtimeConversationListVoices).await?;
+diff --git a/codex-rs/core/tests/suite/pending_input_persistence.rs b/codex-rs/core/tests/suite/pending_input_persistence.rs
+index e94db81..7440713 100644
+--- a/codex-rs/core/tests/suite/pending_input_persistence.rs
++++ b/codex-rs/core/tests/suite/pending_input_persistence.rs
+@@ -367,6 +367,7 @@ async fn preparation_and_first_sampling_do_not_wait_for_durable_metadata(
+                         /*trigger_turn*/ true,
+                     ),
+                     start_options: Default::default(),
++                    wake_if_idle: false,
+                 })
+                 .await?;
+         }
+diff --git a/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs b/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs
+index 3fa281b..097e19d 100644
+--- a/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs
++++ b/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs
+@@ -122,6 +122,7 @@ async fn mailbox_preemption_preserves_response_when_deferred(
+                     /*trigger_turn*/ false,
+                 ),
+                 start_options: Default::default(),
++                wake_if_idle: false,
+             })
+             .await?;
+     }
+diff --git a/codex-rs/core/tests/suite/subagent_notifications.rs b/codex-rs/core/tests/suite/subagent_notifications.rs
+index ccd44bb..5fd5a74 100644
+--- a/codex-rs/core/tests/suite/subagent_notifications.rs
++++ b/codex-rs/core/tests/suite/subagent_notifications.rs
+@@ -2809,6 +2809,8 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> R
+     let mut builder = test_codex()
+         .with_model("gpt-5.6-sol")
+         .with_config(|config| {
++            // This scenario tests follow-up lineage independently of parent auto-wake.
++            config.agent_wake_parent_on_completion = false;
+             for feature in [Feature::Collab, Feature::MultiAgentV2] {
+                 config
+                     .features
+diff --git a/codex-rs/core/tests/suite/subagent_service_tier.rs b/codex-rs/core/tests/suite/subagent_service_tier.rs
+index 74d5592..906dcf6 100644
+--- a/codex-rs/core/tests/suite/subagent_service_tier.rs
++++ b/codex-rs/core/tests/suite/subagent_service_tier.rs
+@@ -63,6 +63,8 @@ fn assert_request_service_tier(request: &ResponseMock, expected: Option<&str>) {
+ }
+ 
+ fn configure_priority_role(config: &mut Config) {
++    // Keep automatic parent turns out of service-tier request cardinality checks.
++    config.agent_wake_parent_on_completion = false;
+     for feature in [Feature::Collab, Feature::MultiAgentV2] {
+         config
+             .features
+diff --git a/codex-rs/core/tests/suite/turn_input_submission.rs b/codex-rs/core/tests/suite/turn_input_submission.rs
+index 393cf8a..2ba16e5 100644
+--- a/codex-rs/core/tests/suite/turn_input_submission.rs
++++ b/codex-rs/core/tests/suite/turn_input_submission.rs
+@@ -345,6 +345,7 @@ async fn host_drain_allows_mailbox_work_to_start_a_turn() -> anyhow::Result<()>
+                 /*trigger_turn*/ true,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     wait_for_event(&test.codex, |event| {
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index da9ba1a..ccbccdc 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -665,6 +665,8 @@ pub enum Op {
+     InterAgentCommunication {
+         communication: InterAgentCommunication,
+         start_options: TurnStartOptions,
++        /// Completion results may request a wake only if the recipient is idle at delivery.
++        wake_if_idle: bool,
+     },
+ 
+     /// Approve a command execution
