@@ -12,10 +12,10 @@ index 51f3e06..698940d 100644
  mod plugin_install;
 diff --git a/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
 new file mode 100644
-index 0000000..1a97199
+index 0000000..f964b0a
 --- /dev/null
 +++ b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
-@@ -0,0 +1,540 @@
+@@ -0,0 +1,546 @@
 +//! Parent completion delivery is observable through the app-server turn stream.
 +
 +use anyhow::Result;
@@ -51,7 +51,7 @@ index 0000000..1a97199
 +#[tokio::test]
 +async fn terminal_child_obeys_parent_wake_switch(wake_enabled: bool, error: bool) -> Result<()> {
 +    let server = responses::start_mock_server().await;
-+    responses::mount_sse_once_match(
++    let parent_spawn = responses::mount_sse_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -73,7 +73,7 @@ index 0000000..1a97199
 +        ]),
 +    )
 +    .await;
-+    responses::mount_sse_once_match(
++    let parent_finished = responses::mount_sse_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -214,6 +214,8 @@ index 0000000..1a97199
 +    };
 +    assert_eq!(child.requests().len(), 1);
 +    assert_eq!(wake.requests().len(), 1);
++    assert_eq!(parent_spawn.requests().len(), 1);
++    assert_eq!(parent_finished.requests().len(), 1);
 +    assert!(
 +        timeout(
 +            Duration::from_millis(300),
@@ -238,7 +240,7 @@ index 0000000..1a97199
 +#[tokio::test]
 +async fn interrupted_child_notifies_and_wakes_idle_parent_once() -> Result<()> {
 +    let server = responses::start_mock_server().await;
-+    responses::mount_sse_once_match(
++    let parent_spawn = responses::mount_sse_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -260,7 +262,7 @@ index 0000000..1a97199
 +        ]),
 +    )
 +    .await;
-+    responses::mount_sse_once_match(
++    let parent_finished = responses::mount_sse_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -388,13 +390,15 @@ index 0000000..1a97199
 +    )
 +    .await??;
 +    assert_eq!(wake.requests().len(), 1);
++    assert_eq!(parent_spawn.requests().len(), 1);
++    assert_eq!(parent_finished.requests().len(), 1);
 +    Ok(())
 +}
 +
 +#[tokio::test]
 +async fn completed_child_during_parent_turn_does_not_start_another_turn() -> Result<()> {
 +    let server = responses::start_mock_server().await;
-+    responses::mount_sse_once_match(
++    let parent_spawn = responses::mount_sse_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -416,7 +420,7 @@ index 0000000..1a97199
 +        ]),
 +    )
 +    .await;
-+    responses::mount_response_once_match(
++    let parent_finished = responses::mount_response_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -554,6 +558,8 @@ index 0000000..1a97199
 +        );
 +    }
 +    assert_eq!(completion_request.requests().len(), 1);
++    assert_eq!(parent_spawn.requests().len(), 1);
++    assert_eq!(parent_finished.requests().len(), 1);
 +    Ok(())
 +}
 diff --git a/codex-rs/config/src/config_toml.rs b/codex-rs/config/src/config_toml.rs
@@ -596,18 +602,67 @@ index e2ef8de..6e6c772 100644
  }
  
  /// Settings shared by the tree. A service tier of `None` restores the default tier.
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index 705d48c..b191e36 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -175,6 +175,7 @@ impl LocalAgentControl {
+             communication,
+             agent_communication_context,
+             start_options,
++            /*wake_if_idle*/ false,
+         )
+         .await
+     }
+@@ -235,6 +236,7 @@ impl LocalAgentControl {
+         communication: InterAgentCommunication,
+         context: AgentCommunicationContext,
+         start_options: TurnStartOptions,
++        wake_if_idle: bool,
+     ) -> CodexResult<String> {
+         self.submit_inter_agent_communication(
+             agent_id,
+@@ -242,6 +244,7 @@ impl LocalAgentControl {
+             communication,
+             context,
+             start_options,
++            wake_if_idle,
+         )
+         .await
+     }
+@@ -253,6 +256,7 @@ impl LocalAgentControl {
+         communication: InterAgentCommunication,
+         context: AgentCommunicationContext,
+         start_options: TurnStartOptions,
++        wake_if_idle: bool,
+     ) -> CodexResult<String> {
+         let communication_for_log =
+             crate::agent_communication::logging_enabled().then(|| communication.clone());
+@@ -274,6 +278,7 @@ impl LocalAgentControl {
+                         Op::InterAgentCommunication {
+                             communication,
+                             start_options,
++                            wake_if_idle,
+                         },
+                         parent_turn_id,
+                         root_turn_id,
 diff --git a/codex-rs/core/src/agent/control/completion.rs b/codex-rs/core/src/agent/control/completion.rs
-index 0f09257..5e43616 100644
+index 0f09257..42627d9 100644
 --- a/codex-rs/core/src/agent/control/completion.rs
 +++ b/codex-rs/core/src/agent/control/completion.rs
-@@ -95,12 +95,23 @@ impl LocalAgentControl {
+@@ -95,6 +95,22 @@ impl LocalAgentControl {
          // `communication` owns the message. Keep a second copy only when the
          // recorder will actually need it after parent delivery succeeds.
          let trace_message = trace.is_enabled().then(|| message.clone());
-+        let wake_idle_parent = if outcome.wake_parent_on_completion {
++        let wake_if_idle = if outcome.wake_parent_on_completion {
 +            match self.runtime.upgrade() {
 +                Ok(state) => match state.get_thread(parent_thread_id).await {
-+                    Ok(parent) => parent.session.active_turn.lock().await.is_none(),
++                    // Wake admission is best effort. A full execution budget must not
++                    // prevent the terminal result from entering the parent's mailbox.
++                    Ok(parent) => parent
++                        .ensure_execution_capacity_for_turn_start(self)
++                        .await
++                        .is_ok(),
 +                    Err(_) => false,
 +                },
 +                Err(_) => false,
@@ -618,13 +673,70 @@ index 0f09257..5e43616 100644
          let communication = InterAgentCommunication::new(
              child_agent_path.clone(),
              parent_agent_path,
-             Vec::new(),
-             message,
--            /*trigger_turn*/ false,
-+            /*trigger_turn*/ wake_idle_parent,
+@@ -104,15 +120,20 @@ impl LocalAgentControl {
          );
          let context =
              AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
+-        if let Err(err) = self
+-            .send_inter_agent_communication(
++        let delivery = async {
++            let state = self.runtime.upgrade()?;
++            self.send_inter_agent_communication_after_capacity_check(
+                 parent_thread_id,
++                &state,
+                 communication,
+                 context,
+                 TurnStartOptions::default(),
++                wake_if_idle,
+             )
+             .await
+-        {
++        }
++        .await;
++        if let Err(err) = delivery {
+             debug!("failed to notify parent thread {parent_thread_id}: {err}");
+             return;
+         }
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 9b64298..0009e1c 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -850,6 +850,7 @@ impl LocalAgentControl {
+                     communication,
+                     context,
+                     start_options,
++                    /*wake_if_idle*/ false,
+                 )
+                 .await?;
+             }
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index ceaeaa3..1b4f111 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -791,6 +791,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
+         Op::InterAgentCommunication {
+             communication: communication.clone(),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         },
+     );
+     let captured = harness
+@@ -1109,6 +1110,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
+         Op::InterAgentCommunication {
+             communication,
+             start_options: Default::default(),
++            wake_if_idle: false,
+         },
+     );
+     let captured = harness
+@@ -4204,6 +4206,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         },
+     );
+ 
 diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
 index f91a288..c8b7018 100644
 --- a/codex-rs/core/src/config/config_tests.rs
@@ -727,6 +839,65 @@ index a782af1..7e6e67b 100644
              codex_home,
              sqlite: codex_state::SqliteConfig::from_sqlite_home(sqlite_home),
              log_dir,
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index cc8413a..12503f8 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -76,16 +76,30 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
+ 
+ /// Queues an inter-agent message, then lets the shared pending-work scheduler
+ /// decide whether an idle session should start a regular turn.
++#[expect(
++    clippy::await_holding_invalid_type,
++    reason = "completion idle check and mailbox enqueue must remain atomic with turn start"
++)]
+ pub async fn inter_agent_communication(
+     sess: &Arc<Session>,
+     sub_id: String,
+-    communication: InterAgentCommunication,
++    mut communication: InterAgentCommunication,
+     start_options: codex_protocol::turn_input::TurnStartOptions,
++    wake_if_idle: bool,
+ ) {
+-    let trigger_turn = communication.trigger_turn;
+-    sess.input_queue
+-        .enqueue_mailbox_communication(communication, start_options)
+-        .await;
++    let trigger_turn = {
++        // Serialize the completion's idle decision and enqueue with user turn starts.
++        // A result arriving during a turn must not request another turn afterwards.
++        let active_turn = sess.active_turn.lock().await;
++        if wake_if_idle && active_turn.is_none() {
++            communication.trigger_turn = true;
++        }
++        let trigger_turn = communication.trigger_turn;
++        sess.input_queue
++            .enqueue_mailbox_communication(communication, start_options)
++            .await;
++        trigger_turn
++    };
+     crate::agent_communication::emit_agent_communication_receive(&sub_id);
+     if trigger_turn || sess.has_outstanding_durable_sleep() {
+         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
+@@ -561,9 +575,16 @@ pub(super) async fn submission_loop(
+                 Op::InterAgentCommunication {
+                     communication,
+                     start_options,
++                    wake_if_idle,
+                 } => {
+-                    inter_agent_communication(&sess, sub.id.clone(), communication, start_options)
+-                        .await;
++                    inter_agent_communication(
++                        &sess,
++                        sub.id.clone(),
++                        communication,
++                        start_options,
++                        wake_if_idle,
++                    )
++                    .await;
+                     false
+                 }
+                 Op::ExecApproval {
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
 index 6d1580b..efbadfe 100644
 --- a/codex-rs/core/src/session/mod.rs
@@ -762,3 +933,144 @@ index 315ef1c..bbe2339 100644
      };
      Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
  }
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index ddaa1f1..e5a0d82 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -136,9 +136,11 @@ fn capture_test_op(op: &Op) -> Option<Op> {
+         Op::InterAgentCommunication {
+             communication,
+             start_options,
++            wake_if_idle,
+         } => Some(Op::InterAgentCommunication {
+             communication: communication.clone(),
+             start_options: start_options.clone(),
++            wake_if_idle: *wake_if_idle,
+         }),
+         Op::Shutdown => Some(Op::Shutdown),
+         _ => None,
+diff --git a/codex-rs/core/tests/suite/compact_remote.rs b/codex-rs/core/tests/suite/compact_remote.rs
+index 76032f3..c60e092 100644
+--- a/codex-rs/core/tests/suite/compact_remote.rs
++++ b/codex-rs/core/tests/suite/compact_remote.rs
+@@ -914,6 +914,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     let channel_progress = "Message Type: CHANNEL_POST\nSender: /root/child\nChannel: progress\nMessage ID: aaaabbbbcccc\nThread ID: aaaabbbbcccc\nPayload:\nchild channel progress";
+@@ -927,6 +928,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     codex
+@@ -939,6 +941,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     let delegated_task_ciphertext = format!("delegated compact task{}", "x".repeat(40_000));
+@@ -952,6 +955,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ true,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     wait_for_turn_complete(&codex).await;
+@@ -968,6 +972,7 @@ async fn remote_compact_v2_reuses_compaction_trigger_for_followups() -> Result<(
+                 /*trigger_turn*/ true,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     wait_for_turn_complete(&codex).await;
+diff --git a/codex-rs/core/tests/suite/models_cache_auth.rs b/codex-rs/core/tests/suite/models_cache_auth.rs
+index 4521237..3d06472 100644
+--- a/codex-rs/core/tests/suite/models_cache_auth.rs
++++ b/codex-rs/core/tests/suite/models_cache_auth.rs
+@@ -202,6 +202,7 @@ async fn auth_rotation_refreshes_before_turn_with_best_effort(
+                         /*trigger_turn*/ true,
+                     ),
+                     start_options: Default::default(),
++                    wake_if_idle: false,
+                 })
+                 .await?;
+         }
+diff --git a/codex-rs/core/tests/suite/pending_input.rs b/codex-rs/core/tests/suite/pending_input.rs
+index 0453bf8..5ffff1c 100644
+--- a/codex-rs/core/tests/suite/pending_input.rs
++++ b/codex-rs/core/tests/suite/pending_input.rs
+@@ -387,6 +387,7 @@ async fn enqueue_queue_only_agent_mail(codex: &CodexThread, text: &str) {
+                 /*trigger_turn*/ false,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await
+         .expect("submit queue-only agent mail");
+@@ -1422,6 +1423,7 @@ async fn terminal_compaction_error_does_not_retry_pending_input(
+                         /*trigger_turn*/ true,
+                     ),
+                     start_options: Default::default(),
++                    wake_if_idle: false,
+                 })
+                 .await?;
+             codex.submit(Op::RealtimeConversationListVoices).await?;
+diff --git a/codex-rs/core/tests/suite/pending_input_persistence.rs b/codex-rs/core/tests/suite/pending_input_persistence.rs
+index e94db81..7440713 100644
+--- a/codex-rs/core/tests/suite/pending_input_persistence.rs
++++ b/codex-rs/core/tests/suite/pending_input_persistence.rs
+@@ -367,6 +367,7 @@ async fn preparation_and_first_sampling_do_not_wait_for_durable_metadata(
+                         /*trigger_turn*/ true,
+                     ),
+                     start_options: Default::default(),
++                    wake_if_idle: false,
+                 })
+                 .await?;
+         }
+diff --git a/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs b/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs
+index 3fa281b..097e19d 100644
+--- a/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs
++++ b/codex-rs/core/tests/suite/scenarios_mailbox_preemption_tests.rs
+@@ -122,6 +122,7 @@ async fn mailbox_preemption_preserves_response_when_deferred(
+                     /*trigger_turn*/ false,
+                 ),
+                 start_options: Default::default(),
++                wake_if_idle: false,
+             })
+             .await?;
+     }
+diff --git a/codex-rs/core/tests/suite/turn_input_submission.rs b/codex-rs/core/tests/suite/turn_input_submission.rs
+index 393cf8a..2ba16e5 100644
+--- a/codex-rs/core/tests/suite/turn_input_submission.rs
++++ b/codex-rs/core/tests/suite/turn_input_submission.rs
+@@ -345,6 +345,7 @@ async fn host_drain_allows_mailbox_work_to_start_a_turn() -> anyhow::Result<()>
+                 /*trigger_turn*/ true,
+             ),
+             start_options: Default::default(),
++            wake_if_idle: false,
+         })
+         .await?;
+     wait_for_event(&test.codex, |event| {
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index da9ba1a..ccbccdc 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -665,6 +665,8 @@ pub enum Op {
+     InterAgentCommunication {
+         communication: InterAgentCommunication,
+         start_options: TurnStartOptions,
++        /// Completion results may request a wake only if the recipient is idle at delivery.
++        wake_if_idle: bool,
+     },
+ 
+     /// Approve a command execution

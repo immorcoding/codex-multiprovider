@@ -23,7 +23,7 @@ node --test tools/engine-baseline.test.mjs
 
 ## 父代理完成通知增量补丁（#12）
 
-[`patch/parent-completion.patch`](../patch/parent-completion.patch) 独立针对上述 `rust-v0.158.0` SHA，不包含旧版供应商路由补丁。它给 `[agents]` 增加 `wake_parent_on_completion`（默认 `true`）：子代理成功、错误或中断后向直接父代理投递一次结果；开启时唤醒空闲父代理，关闭或父代理正在运行时只排队。它不修改 Microsoft Store 客户端，也不使 `-BaselineOnly` 变成多供应商构建。
+[`patch/parent-completion.patch`](../patch/parent-completion.patch) 独立针对上述 `rust-v0.158.0` SHA，不包含旧版供应商路由补丁。它给 `[agents]` 增加 `wake_parent_on_completion`（默认 `true`）：子代理成功、错误或中断后向直接父代理投递一次结果；开启时唤醒有执行容量的空闲父代理，关闭、容量不足或父代理正在运行时只排队。它不修改 Microsoft Store 客户端，也不使 `-BaselineOnly` 变成多供应商构建。
 
 在**干净的**固定版本开源引擎 checkout 中单独应用和验证：
 
