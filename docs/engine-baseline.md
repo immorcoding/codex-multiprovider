@@ -48,3 +48,11 @@ just test -p codex-core load_config_resolves_agent_controls
 `codex.exe` 设置 `CODEX_TEST_ROUTED_BINARY` 运行 `node --test tools/model-routing.test.mjs`。
 目前安装脚本的 `-RoutingPatch` 只应用第一份补丁；增量补丁需要手动应用并重新构建，不修改
 Microsoft Store 引擎。
+
+## 子代理供应商绑定增量补丁（#11）
+
+[`patch/subagent-provider-binding-0.158.patch`](../patch/subagent-provider-binding-0.158.patch)
+依次以前述 0.158 路由和分叉补丁为前置。它在 `spawn_agent` 解析显式模型、角色默认和系统默认模型后、
+创建子线程前检查目标供应商是否等于父线程供应商；拒绝时报告模型、目标及父供应商。已有
+`-RoutingPatch` 安装入口仍只应用第一份补丁，因此需手动依序应用三份补丁并重新构建。
+`model-routing.yml` 在 Windows 和 Linux 上检查组合补丁、Rust 子代理 seam 和模拟供应商 CLI 行为。

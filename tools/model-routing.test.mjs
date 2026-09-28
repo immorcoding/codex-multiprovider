@@ -14,19 +14,23 @@ async function fixture(run) {
   const home = mkdtempSync(path.join(tmpdir(), 'codex-mp-route-'));
   const cwd = mkdtempSync(path.join(tmpdir(), 'codex-mp-route-cwd-'));
   const requests = [];
+  let respond = () => [{ id: 'msg-1', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'routed reply' }] }];
   const server = http.createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
-    requests.push({ url: request.url, body: body ? JSON.parse(body) : null });
+    const requestBody = body ? JSON.parse(body) : null;
+    requests.push({ url: request.url, body: requestBody });
     if (request.method !== 'POST' || !request.url.endsWith('/responses')) {
       response.writeHead(404, { 'content-type': 'application/json' });
       response.end('{}');
       return;
     }
     response.writeHead(200, { 'content-type': 'text/event-stream' });
+    const output = respond(requestBody);
     for (const event of [
       { type: 'response.created', response: { id: 'response-1', model: 'routed-model', output: [], status: 'in_progress' } },
-      { type: 'response.completed', response: { id: 'response-1', model: 'routed-model', output: [{ id: 'msg-1', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'routed reply' }] }], status: 'completed', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+      ...output.filter((item) => item.type === 'function_call').map((item) => ({ type: 'response.output_item.done', item })),
+      { type: 'response.completed', response: { id: 'response-1', model: requestBody?.model ?? 'routed-model', output, status: 'completed', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
     ]) response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     response.end();
   });
@@ -48,7 +52,7 @@ other-provider-model = "openai"
 `);
   configure();
   try {
-    await run({ home, cwd, requests, configure });
+    await run({ home, cwd, requests, configure, baseUrl, setResponder: (callback) => { respond = callback; } });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     for (const directory of [home, cwd]) {
@@ -56,6 +60,35 @@ other-provider-model = "openai"
       rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
     }
   }
+}
+
+function configureSubagentFixture(home, baseUrl, target) {
+  writeFileSync(path.join(home, 'config.toml'), `
+model = "gpt-5.5"
+[features]
+multi_agent_v2 = true
+[model_providers.mock_route]
+name = "Mock route"
+base_url = "${baseUrl}"
+wire_api = "responses"
+requires_openai_auth = false
+[model_provider_routes]
+"gpt-5.5" = "mock_route"
+"gpt-5.6-terra" = "${target}"
+`);
+}
+
+function subagentResponse(body, waitForChild = false) {
+  const toolOutputs = body.input?.filter((item) => item.type === 'function_call_output') ?? [];
+  if (body.model === 'gpt-5.5' && toolOutputs.length === 0) {
+    return [{ id: 'spawn-1', type: 'function_call', namespace: 'collaboration', name: 'spawn_agent', call_id: 'spawn-call', arguments: JSON.stringify({
+      task_name: 'worker', message: 'Reply briefly.', model: 'gpt-5.6-terra', fork_turns: 'none',
+    }), status: 'completed' }];
+  }
+  if (body.model === 'gpt-5.5' && waitForChild && !toolOutputs.some((item) => item.call_id === 'wait-call')) {
+    return [{ id: 'wait-1', type: 'function_call', namespace: 'collaboration', name: 'wait_agent', call_id: 'wait-call', arguments: JSON.stringify({ timeout_ms: 15000 }), status: 'completed' }];
+  }
+  return [{ id: 'msg-1', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }];
 }
 
 async function exec(binaryPath, home, cwd, args = ['exec', '--skip-git-repo-check', '--json', 'Reply briefly.']) {
@@ -139,6 +172,47 @@ test('app-server sends a selected mapped model to its provider and rejects an ex
     await expectRequest(requests, '/v1/responses', 'routed-model');
     await assert.rejects(rpc('thread/start', { ...common, model: 'routed-model', modelProvider: 'openai' }), /routed-model.*mock_route.*openai/);
   }));
+});
+
+test('CLI subagent requests use the parent provider and reject a cross-provider model without substitution', { timeout: 90_000 }, async () => {
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
+  await fixture(async ({ home, cwd, requests, baseUrl, setResponder }) => {
+    // Keep the root turn alive until the child's request/notification has run. A CLI root can
+    // otherwise finish and exit before its independently scheduled child sends HTTP.
+    setResponder((body) => subagentResponse(body, true));
+    configureSubagentFixture(home, baseUrl, 'mock_route');
+    const same = await exec(binary, home, cwd, ['exec', '--skip-git-repo-check', '--json', 'Spawn worker.']);
+    assert.equal(same.code, 0, `${same.stdout}\n${same.stderr}`);
+    assert.ok(requests.some((request) => request.body?.model === 'gpt-5.6-terra' && request.url === '/v1/responses'), `${requests.map(({ url, body }) => `${url}: ${body?.model}`).join(', ')}\n${same.stdout}\n${same.stderr}`);
+
+    requests.length = 0;
+    configureSubagentFixture(home, baseUrl, 'openai');
+    setResponder(subagentResponse);
+    const cross = await exec(binary, home, cwd, ['exec', '--skip-git-repo-check', '--json', 'Spawn worker.']);
+    assert.match(`${cross.stdout}\n${cross.stderr}`, /gpt-5\.6-terra.*openai.*mock_route/);
+    assert.equal(requests.filter((request) => request.body?.model === 'gpt-5.6-terra').length, 0);
+  });
+});
+
+test('app-server subagent tool calls preserve the parent provider and surface cross-provider rejection', { timeout: 90_000 }, async () => {
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
+  await fixture(async ({ home, cwd, requests, baseUrl, setResponder }) => {
+    setResponder(subagentResponse);
+    const runTurn = (expectChild) => appServer(home, async (rpc, notifications) => {
+      const started = await rpc('thread/start', { cwd, model: 'gpt-5.5', approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true });
+      assert.equal(started.modelProvider, 'mock_route');
+      await rpc('turn/start', { threadId: started.thread.id, input: [{ type: 'text', text: 'Spawn worker.', text_elements: [] }] });
+      if (expectChild) await expectRequest(requests, '/v1/responses', 'gpt-5.6-terra');
+      await expectNotification(notifications, 'turn/completed');
+    });
+    configureSubagentFixture(home, baseUrl, 'mock_route');
+    await runTurn(true);
+    requests.length = 0;
+    configureSubagentFixture(home, baseUrl, 'openai');
+    await runTurn(false);
+    assert.equal(requests.filter((request) => request.body?.model === 'gpt-5.6-terra').length, 0);
+    assert.match(JSON.stringify(requests.map((request) => request.body?.input)), /gpt-5\.6-terra.*openai.*mock_route/);
+  });
 });
 
 test('app-server sends the configured mapped model to its route and an unmapped model to the default provider', { timeout: 90_000 }, async () => {
