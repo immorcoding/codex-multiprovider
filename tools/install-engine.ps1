@@ -15,8 +15,9 @@
   Use -EnginePath to patch an existing checkout instead of cloning. The checkout must be at the
   pinned commit and have no modified files.
 
-  With -BaselineOnly, the script pins the latest validated stable release, skips the old patch,
-  and restores Cargo.lock after building. This is a build baseline, not a multi-provider engine.
+  With -BaselineOnly, the script pins the latest validated stable release without a patch.
+  With -RoutingPatch, it applies the model-routing-only patch to that stable release. Neither
+  mode changes the legacy default installer path or the Microsoft Store desktop engine.
 
   What it cannot do for you: Node.js and the compatibility proxy, the provider API key, and the
   client launch configuration. Those live in the README; this script stops once the engine builds.
@@ -34,6 +35,9 @@
   Build the pinned stable upstream engine without applying this repository's older patch. This is
   for validating the new baseline while the provider-routing patch is being ported separately.
 
+.PARAMETER RoutingPatch
+  Build the stable 0.158.0 engine with only the model-provider routing patch from issue #8.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File install-engine.ps1
   powershell -ExecutionPolicy Bypass -File install-engine.ps1 -EnginePath C:\src\codex
@@ -43,7 +47,8 @@ param(
     [string]$WorkDir,
     [ValidateSet('release', 'debug')]
     [string]$Profile = 'release',
-    [switch]$BaselineOnly
+    [switch]$BaselineOnly,
+    [switch]$RoutingPatch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,9 +58,16 @@ Set-StrictMode -Version Latest
 # .github/workflows/patch-applies.yml; the script verifies the checkout matches before patching.
 $LegacyPatchSha = '1715e55076737158ba61d43158ede504de6d4ce1'
 $StableBaselineSha = '064c6b8c737f5b41d171fdda80bd9ef10ad06eb3'
-$PinnedSha = if ($BaselineOnly) { $StableBaselineSha } else { $LegacyPatchSha }
+if ($BaselineOnly -and $RoutingPatch) {
+    throw '-BaselineOnly and -RoutingPatch cannot be combined.'
+}
+$PinnedSha = if ($BaselineOnly -or $RoutingPatch) { $StableBaselineSha } else { $LegacyPatchSha }
 $UpstreamUrl = 'https://github.com/openai/codex.git'
-$PatchPath = Join-Path $PSScriptRoot '..\patch\model-provider-routes.patch'
+$PatchPath = if ($RoutingPatch) {
+    Join-Path $PSScriptRoot '..\patch\model-provider-routes-0.158.patch'
+} else {
+    Join-Path $PSScriptRoot '..\patch\model-provider-routes.patch'
+}
 
 function Write-Step {
     param([string]$Message)
@@ -195,6 +207,11 @@ Write-Step 'Done'
 Write-Ok "engine: $engineBinary ($sizeMb MB)"
 if ($BaselineOnly) {
     Write-Note 'This is the unpatched upstream engine for baseline validation only.'
+    return
+}
+if ($RoutingPatch) {
+    Write-Note 'This engine contains model-provider routing only; legacy proxy and agent additions are not included.'
+    Write-Note 'Configure model_providers and model_provider_routes in an isolated CODEX_HOME to try it.'
     return
 }
 Write-Host ''

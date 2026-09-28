@@ -11,6 +11,16 @@
 Adds a second model provider (DeepSeek by default) to the Codex desktop model picker, and pins every
 session to the provider it starts on. The desktop client is not modified.
 
+The new **0.158.0 routing-only** patch for [#8](https://github.com/immorcoding/codex-multiprovider/issues/8)
+is `patch/model-provider-routes-0.158.patch`. Build it from a clean `rust-v0.158.0` checkout with
+`powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1 -RoutingPatch -EnginePath C:\path\to\codex -Profile debug`. It routes
+`thread/start` and `codex exec` using `[model_provider_routes]`, rejects explicit conflicts and
+unknown provider IDs, and leaves unmapped models on the default provider. Run the mock-provider
+behavior tests with `$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\codex.exe'` followed by
+`node --test tools/model-routing.test.mjs`.
+The setup below still describes the **legacy 0.154.0** patch and remains the default installer mode;
+the 0.158.0 patch does not include its proxy, subagent, or desktop integration additions.
+
 | Picker choice | Provider of that session |
 | --- | --- |
 | OpenAI model, e.g. `gpt-5.5` | OpenAI |

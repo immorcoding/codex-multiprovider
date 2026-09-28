@@ -1,0 +1,91 @@
+diff --git a/codex-rs/config/src/config_toml.rs b/codex-rs/config/src/config_toml.rs
+index 3369f46..ff9d0d7 100644
+--- a/codex-rs/config/src/config_toml.rs
++++ b/codex-rs/config/src/config_toml.rs
+@@ -325,6 +325,10 @@ pub struct ConfigToml {
+     #[serde(default, deserialize_with = "deserialize_model_providers")]
+     pub model_providers: HashMap<String, ModelProviderInfo>,
+ 
++    /// Model slug to provider id. Models not listed here use the default provider.
++    #[serde(default)]
++    pub model_provider_routes: HashMap<String, String>,
++
+     /// Maximum total bytes of project instruction content across all selected environments.
+     #[serde(default = "default_project_doc_max_bytes")]
+     pub project_doc_max_bytes: Option<usize>,
+diff --git a/codex-rs/core/config.schema.json b/codex-rs/core/config.schema.json
+index f653c99..26e5b4b 100644
+--- a/codex-rs/core/config.schema.json
++++ b/codex-rs/core/config.schema.json
+@@ -7408,6 +7408,14 @@
+       "description": "Provider to use from the model_providers map.",
+       "type": "string"
+     },
++    "model_provider_routes": {
++      "additionalProperties": {
++        "type": "string"
++      },
++      "default": {},
++      "description": "Model slug to provider id. Models not listed here use the default provider.",
++      "type": "object"
++    },
+     "model_providers": {
+       "additionalProperties": {
+         "$ref": "#/definitions/ModelProviderInfo"
+diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
+index a782af1..2fc4870 100644
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -900,6 +900,9 @@ pub struct Config {
+     /// Combined provider map (defaults plus user-defined providers).
+     pub model_providers: HashMap<String, ModelProviderInfo>,
+ 
++    /// Model slug to provider id; absent models use the default provider.
++    pub model_provider_routes: HashMap<String, String>,
++
+     /// Maximum total bytes of project instruction content across all selected environments.
+     pub project_doc_max_bytes: usize,
+ 
+@@ -3801,9 +3804,32 @@ impl Config {
+             merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
+                 .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
+ 
+-        let model_provider_id = config_layer_stack.required_model_provider().map(str::to_string)
++        for (model, provider_id) in &cfg.model_provider_routes {
++            if !model_providers.contains_key(provider_id) {
++                return Err(std::io::Error::new(
++                    std::io::ErrorKind::NotFound,
++                    format!("model_provider_routes.{model} references unknown model provider `{provider_id}`"),
++                ));
++            }
++        }
++
++        let selected_model = model.as_ref().or(cfg.model.as_ref());
++        let routed_provider = selected_model.and_then(|model| cfg.model_provider_routes.get(model));
++        let explicit_provider = config_layer_stack.required_model_provider().map(str::to_string)
+             .or(model_provider)
+-            .or(cfg.model_provider)
++            .or(cfg.model_provider);
++        if let (Some(model), Some(route), Some(explicit)) =
++            (selected_model, routed_provider, explicit_provider.as_ref())
++            && route != explicit
++        {
++            return Err(std::io::Error::new(
++                std::io::ErrorKind::InvalidInput,
++                format!("model `{model}` is routed to model provider `{route}` and cannot run on `{explicit}`"),
++            ));
++        }
++
++        let model_provider_id = explicit_provider
++            .or_else(|| routed_provider.cloned())
+             .unwrap_or_else(|| "openai".to_string());
+         let model_provider = model_providers
+             .get(&model_provider_id)
+@@ -4324,6 +4350,7 @@ impl Config {
+                 .map(Duration::from_millis)
+                 .unwrap_or(DEFAULT_OPTIONAL_MCP_STARTUP_GRACE),
+             model_providers,
++            model_provider_routes: cfg.model_provider_routes.clone(),
+             project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(AGENTS_MD_MAX_BYTES),
+             project_doc_fallback_filenames: cfg
+                 .project_doc_fallback_filenames
