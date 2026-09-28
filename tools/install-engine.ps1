@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Clones the upstream Codex engine at the pinned commit, applies the multi-provider patch, and builds it.
+  Builds either the legacy patched engine or a clean pinned upstream baseline.
 
 .DESCRIPTION
   One command, from nothing to a patched codex.exe. The script:
@@ -15,6 +15,9 @@
   Use -EnginePath to patch an existing checkout instead of cloning. The checkout must be at the
   pinned commit and have no modified files.
 
+  With -BaselineOnly, the script pins the latest validated stable release, skips the old patch,
+  and restores Cargo.lock after building. This is a build baseline, not a multi-provider engine.
+
   What it cannot do for you: Node.js and the compatibility proxy, the provider API key, and the
   client launch configuration. Those live in the README; this script stops once the engine builds.
 
@@ -27,6 +30,10 @@
 .PARAMETER Profile
   Cargo profile to build. Defaults to release because that is what the client should run.
 
+.PARAMETER BaselineOnly
+  Build the pinned stable upstream engine without applying this repository's older patch. This is
+  for validating the new baseline while the provider-routing patch is being ported separately.
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File install-engine.ps1
   powershell -ExecutionPolicy Bypass -File install-engine.ps1 -EnginePath C:\src\codex
@@ -35,7 +42,8 @@ param(
     [string]$EnginePath,
     [string]$WorkDir,
     [ValidateSet('release', 'debug')]
-    [string]$Profile = 'release'
+    [string]$Profile = 'release',
+    [switch]$BaselineOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,7 +51,9 @@ Set-StrictMode -Version Latest
 
 # The upstream commit this patch was generated against. Keep in sync with README.md and
 # .github/workflows/patch-applies.yml; the script verifies the checkout matches before patching.
-$PinnedSha = '1715e55076737158ba61d43158ede504de6d4ce1'
+$LegacyPatchSha = '1715e55076737158ba61d43158ede504de6d4ce1'
+$StableBaselineSha = '064c6b8c737f5b41d171fdda80bd9ef10ad06eb3'
+$PinnedSha = if ($BaselineOnly) { $StableBaselineSha } else { $LegacyPatchSha }
 $UpstreamUrl = 'https://github.com/openai/codex.git'
 $PatchPath = Join-Path $PSScriptRoot '..\patch\model-provider-routes.patch'
 
@@ -94,10 +104,14 @@ if ($hostTriple -notmatch 'msvc') {
     throw "this toolchain targets '$hostTriple', but the engine has to be built for a Windows MSVC target. Install the MSVC toolchain with: rustup default stable-msvc"
 }
 
-if (-not (Test-Path -LiteralPath $PatchPath)) {
+if (-not $BaselineOnly -and -not (Test-Path -LiteralPath $PatchPath)) {
     throw "patch not found at $PatchPath. Run this script from inside the repository checkout."
 }
-Write-Note "patch: $((Resolve-Path -LiteralPath $PatchPath).Path)"
+if ($BaselineOnly) {
+    Write-Note "baseline-only: $PinnedSha (the provider patch will not be applied)"
+} else {
+    Write-Note "patch: $((Resolve-Path -LiteralPath $PatchPath).Path)"
+}
 
 if (-not $EnginePath) {
     if (-not $WorkDir) { $WorkDir = Join-Path (Get-Location).Path 'codex-engine' }
@@ -123,7 +137,7 @@ if (-not $EnginePath) {
 Write-Step 'Verifying the checkout is the commit the patch expects'
 $actualSha = (& git -C $EnginePath rev-parse HEAD).Trim()
 if ($actualSha -ne $PinnedSha) {
-    throw "checked out $actualSha but the patch needs $PinnedSha. Run: git -C `"$EnginePath`" checkout $PinnedSha"
+    throw "checked out $actualSha but this build needs $PinnedSha. Use a clean checkout at the pinned commit."
 }
 Write-Ok "HEAD is $PinnedSha"
 
@@ -133,30 +147,42 @@ if ($dirty.Count -gt 0) {
 }
 Write-Ok 'the checkout is clean'
 
-Write-Step 'Applying the patch'
-# --check first, so a mismatch is reported before anything is touched. git talks progress on stderr,
-# which PowerShell renders as an error block; capture both streams and only surface them on failure.
-$checkOutput = & git -C $EnginePath apply --check $PatchPath 2>&1
-if ($LASTEXITCODE -ne 0) {
-    $checkOutput | ForEach-Object { Write-Host "    $_" }
-    throw 'the patch does not apply to this checkout. Nothing was modified.'
+if ($BaselineOnly) {
+    Write-Step 'Building the unpatched stable baseline'
+} else {
+    Write-Step 'Applying the patch'
+    # --check first, so a mismatch is reported before anything is touched. git talks progress on stderr,
+    # which PowerShell renders as an error block; capture both streams and only surface them on failure.
+    $checkOutput = & git -C $EnginePath apply --check $PatchPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $checkOutput | ForEach-Object { Write-Host "    $_" }
+        throw 'the patch does not apply to this checkout. Nothing was modified.'
+    }
+    Invoke-Git -What 'applying the patch' -Arguments @('-C', $EnginePath, 'apply', $PatchPath)
+    Write-Ok "$(@(& git -C $EnginePath status --porcelain).Count) files patched"
 }
-Invoke-Git -What 'applying the patch' -Arguments @('-C', $EnginePath, 'apply', $PatchPath)
-Write-Ok "$(@(& git -C $EnginePath status --porcelain).Count) files patched"
 
 Write-Step "Building the engine (-p codex-cli --bin codex, profile $Profile)"
 Write-Note 'the first build downloads and compiles the whole Rust workspace and takes a while'
 $cargoArguments = @('build', '-p', 'codex-cli', '--bin', 'codex')
 if ($Profile -eq 'release') { $cargoArguments += '--release' }
+# The release tag's workspace version can differ from the checked-in lockfile's local package
+# versions. Cargo updates that lockfile while building; baseline verification must leave the
+# previously clean upstream checkout exactly as it found it.
+$baselineLockPath = Join-Path $EnginePath 'codex-rs\Cargo.lock'
+$baselineLockBytes = if ($BaselineOnly) { [System.IO.File]::ReadAllBytes($baselineLockPath) } else { $null }
 Push-Location (Join-Path $EnginePath 'codex-rs')
 try {
     & cargo @cargoArguments
     if ($LASTEXITCODE -ne 0) {
-        throw "cargo build failed (exit code $LASTEXITCODE). The patch is applied; rerun cargo in $EnginePath\codex-rs to see the full error."
+        throw "cargo build failed (exit code $LASTEXITCODE). Rerun cargo in $EnginePath\codex-rs to see the full error."
     }
 }
 finally {
     Pop-Location
+    if ($BaselineOnly) {
+        [System.IO.File]::WriteAllBytes($baselineLockPath, $baselineLockBytes)
+    }
 }
 
 $engineBinary = Join-Path $EnginePath "codex-rs\target\$Profile\codex.exe"
@@ -167,6 +193,10 @@ $sizeMb = [math]::Round((Get-Item -LiteralPath $engineBinary).Length / 1MB, 1)
 
 Write-Step 'Done'
 Write-Ok "engine: $engineBinary ($sizeMb MB)"
+if ($BaselineOnly) {
+    Write-Note 'This is the unpatched upstream engine for baseline validation only.'
+    return
+}
 Write-Host ''
 Write-Host 'Next steps (all of them are in README.md):' -ForegroundColor Cyan
 Write-Host "  1. Point the client at it:        `$env:CODEX_CLI_PATH = '$engineBinary'"
