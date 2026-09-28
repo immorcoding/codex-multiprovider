@@ -1,0 +1,219 @@
+diff --git a/codex-rs/core/src/agent/child_config.rs b/codex-rs/core/src/agent/child_config.rs
+index 713c441..c0a3ab2 100644
+--- a/codex-rs/core/src/agent/child_config.rs
++++ b/codex-rs/core/src/agent/child_config.rs
+@@ -67,6 +67,13 @@ pub(crate) async fn prepare_agent_spawn_config(
+         options.reasoning_effort,
+     )
+     .await?;
++    if options.model.is_some() || turn.config.agent_default_subagent_model.is_some() {
++        ensure_child_model_provider_binding(
++            &config,
++            &turn.config.model_provider_id,
++            &step_context.settings.model_info.slug,
++        )?;
++    }
+     if !options.full_history_fork
+         || (options.version == SpawnConfigVersion::V2 && options.role_name.is_some())
+     {
+@@ -80,6 +87,11 @@ pub(crate) async fn prepare_agent_spawn_config(
+                 .clone_from(&turn.developer_instructions);
+         }
+     }
++    ensure_child_model_provider_binding(
++        &config,
++        &turn.config.model_provider_id,
++        &step_context.settings.model_info.slug,
++    )?;
+     apply_spawn_agent_service_tier(session, &mut config).await?;
+     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
+ 
+@@ -99,6 +111,33 @@ pub(crate) async fn prepare_agent_spawn_config(
+     Ok(PreparedSpawnConfig { config, role_name })
+ }
+ 
++fn ensure_child_model_provider_binding(
++    config: &Config,
++    parent_provider: &str,
++    inherited_model: &str,
++) -> Result<(), String> {
++    let model = config.model.as_deref().ok_or_else(|| {
++        "spawn_agent could not resolve the child model for provider binding".to_string()
++    })?;
++    let target_provider = config
++        .model_provider_routes
++        .get(model)
++        .map(String::as_str)
++        .unwrap_or_else(|| {
++            if model == inherited_model {
++                parent_provider
++            } else {
++                &config.unrouted_model_provider_id
++            }
++        });
++    if target_provider != parent_provider {
++        return Err(format!(
++            "subagent model `{model}` resolves to model provider `{target_provider}` and cannot run on parent provider `{parent_provider}`"
++        ));
++    }
++    Ok(())
++}
++
+ /// Builds the base config snapshot for a newly spawned sub-agent.
+ ///
+ /// The returned config starts from the parent's effective config and then refreshes the
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index 9c8268c..5c7bfe3 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -196,6 +196,142 @@ fn set_turn_config(turn: &mut TurnContext, config: crate::config::Config) {
+     turn.config = Arc::new(config);
+ }
+ 
++async fn model_selection_spawn_case(
++    source: &str,
++    target_provider: &str,
++    default_role_model: Option<&str>,
++) -> (
++    Arc<crate::session::session::Session>,
++    Arc<TurnContext>,
++    ThreadManager,
++    ThreadId,
++    serde_json::Value,
++) {
++    let (mut session, mut turn) = make_session_and_context().await;
++    let manager = thread_manager();
++    let root = manager
++        .start_thread(StartThreadOptions::new((*turn.config).clone()))
++        .await
++        .expect("root thread should start");
++    set_agent_control(&mut session, manager.agent_control());
++    session.thread_id = root.thread_id;
++    let mut config = (*turn.config).clone();
++    config
++        .model_provider_routes
++        .insert("gpt-5.5".to_string(), target_provider.to_string());
++    config.features.enable(Feature::MultiAgentV2).unwrap();
++    if source == "system_default" {
++        config.agent_default_subagent_model = Some("gpt-5.5".to_string());
++    }
++    if let Some(role_model) = default_role_model {
++        let path = config.codex_home.join("default-role-model.toml");
++        tokio::fs::create_dir_all(&config.codex_home).await.unwrap();
++        tokio::fs::write(&path, format!("model = \"{role_model}\"\n"))
++            .await
++            .unwrap();
++        config.agent_roles.insert(
++            "default".to_string(),
++            AgentRoleConfig {
++                description: None,
++                config_file: Some(path.to_path_buf()),
++                nickname_candidates: None,
++            },
++        );
++    }
++    set_turn_config(&mut turn, config);
++    let mut args = json!({"message": "inspect", "task_name": "worker", "fork_turns": "none"});
++    if source == "explicit" {
++        args["model"] = json!("gpt-5.5");
++    }
++    (
++        Arc::new(session),
++        Arc::new(turn),
++        manager,
++        root.thread_id,
++        args,
++    )
++}
++
++#[tokio::test]
++async fn spawn_agent_rejects_cross_provider_models_from_each_selection_source() {
++    for source in ["explicit", "role", "system_default"] {
++        let (session, turn, manager, root_id, args) =
++            model_selection_spawn_case(source, "ollama", (source == "role").then_some("gpt-5.5"))
++                .await;
++        let result = SpawnAgentHandlerV2::default()
++            .handle(invocation(
++                session,
++                turn,
++                "spawn_agent",
++                function_payload(args),
++            ))
++            .await;
++        let Err(FunctionCallError::RespondToModel(message)) = result else {
++            panic!("{source} must reject a cross-provider child model");
++        };
++        assert!(message.contains("gpt-5.5"), "{source}: {message}");
++        assert!(message.contains("ollama"), "{source}: {message}");
++        assert!(message.contains("openai"), "{source}: {message}");
++        assert!(manager.get_thread(root_id).await.is_ok());
++    }
++}
++
++#[tokio::test]
++async fn spawn_agent_rejects_cross_provider_request_even_when_default_role_would_replace_it() {
++    for source in ["explicit", "system_default"] {
++        let (session, turn, _manager, _root_id, args) =
++            model_selection_spawn_case(source, "ollama", Some("gpt-5.6-terra")).await;
++        let result = SpawnAgentHandlerV2::default()
++            .handle(invocation(
++                session,
++                turn,
++                "spawn_agent",
++                function_payload(args),
++            ))
++            .await;
++        let Err(FunctionCallError::RespondToModel(message)) = result else {
++            panic!("{source} must reject before the role replaces the requested model");
++        };
++        assert!(message.contains("gpt-5.5"), "{source}: {message}");
++        assert!(message.contains("ollama"), "{source}: {message}");
++        assert!(message.contains("openai"), "{source}: {message}");
++    }
++}
++
++#[tokio::test]
++async fn spawn_agent_executes_same_provider_models_from_each_selection_source() {
++    for source in ["explicit", "role", "system_default"] {
++        let (session, turn, manager, _root_id, args) =
++            model_selection_spawn_case(source, "openai", (source == "role").then_some("gpt-5.5"))
++                .await;
++        let output = SpawnAgentHandlerV2::default()
++            .handle(invocation(
++                session.clone(),
++                turn.clone(),
++                "spawn_agent",
++                function_payload(args),
++            ))
++            .await
++            .unwrap_or_else(|err| panic!("{source} same-provider spawn failed: {err}"));
++        let (content, success) = expect_text_output(output);
++        assert_eq!(success, Some(true), "{source}: {content}");
++        let child_id = session
++            .services
++            .local_agent_runtime
++            .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
++            .await
++            .expect("spawned child should resolve");
++        let snapshot = manager
++            .get_thread(child_id)
++            .await
++            .expect("child should exist")
++            .config_snapshot()
++            .await;
++        assert_eq!(snapshot.model, "gpt-5.5", "{source}");
++        assert_eq!(snapshot.model_provider_id, "openai", "{source}");
++    }
++}
++
+ fn expect_text_output<T>(output: T) -> (String, Option<bool>)
+ where
+     T: ToolOutput,
+@@ -384,6 +520,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
+     let provider_info =
+         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["ollama"].clone();
+     config.model_provider_id = "ollama".to_string();
++    // A session-level provider choice need not change the configured default for unmapped models.
+     config.model_provider = provider_info.clone();
+     config
+         .permissions

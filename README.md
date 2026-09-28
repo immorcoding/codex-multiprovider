@@ -27,9 +27,16 @@ For [#10](https://github.com/immorcoding/codex-multiprovider/issues/10), apply
 then rebuild `codex-cli`. App-server and `codex exec fork` inherit the source provider and last
 model; an explicit same-provider model is allowed, while cross-provider forks fail. A persisted fork
 retains that binding when resumed. The installer currently builds only the routing patch, so apply
-this incremental patch and rebuild before using the fork behavior. The setup below still describes
+this incremental patch and rebuild before using the fork behavior.
+For [#11](https://github.com/immorcoding/codex-multiprovider/issues/11), apply
+`patch/subagent-provider-binding-0.158.patch` after the routing and fork patches. Explicit,
+role-default, and system-default child models resolve against the parent's route table before
+`spawn_agent` creates a child; a cross-provider target fails with the model, target, and parent
+provider named in the error, even if a default role would later replace it. An unchanged, unmapped
+parent model can be inherited under a session-level provider override. No model is silently
+substituted. The setup below still describes
 the **legacy 0.154.0** default installer mode; these 0.158.0 patches do not include its proxy,
-subagent, or desktop integration additions. Subagent inheritance remains separate follow-up work.
+or desktop integration additions.
 
 | Picker choice | Provider of that session |
 | --- | --- |

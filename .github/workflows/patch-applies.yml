@@ -74,7 +74,7 @@ jobs:
             exit 1
           fi
 
-  fork-binding-patch-applies:
+  stable-binding-patches-apply:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -94,3 +94,5 @@ jobs:
           git -C upstream apply "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"

@@ -28,17 +28,24 @@ jobs:
           git -C upstream checkout --detach FETCH_HEAD
           test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
           test -z "$(git -C upstream status --porcelain)"
-      - name: Apply routing, session-binding, and fork-binding patches
+      - name: Apply routing, session, fork, and subagent binding patches
         run: |
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
       - name: Build and check the patched crates
         working-directory: upstream/codex-rs
         run: |
           cargo check -p codex-config -p codex-core -p codex-app-server -p codex-exec
           cargo build -p codex-cli --bin codex
+      - name: Test subagent binding at the shared spawn seam
+        working-directory: upstream/codex-rs
+        env:
+          RUST_MIN_STACK: '16777216'
+        run: cargo test -p codex-core --lib spawn_agent_ -- --test-threads=1
       - name: Run mock-provider app-server and exec behavior tests
         env:
           CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex${{ runner.os == 'Windows' && '.exe' || '' }}
