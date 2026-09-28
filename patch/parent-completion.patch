@@ -697,11 +697,179 @@ index 0f09257..42627d9 100644
              debug!("failed to notify parent thread {parent_thread_id}: {err}");
              return;
          }
+diff --git a/codex-rs/core/src/agent/control/residency.rs b/codex-rs/core/src/agent/control/residency.rs
+index f1041c9..afbb134 100644
+--- a/codex-rs/core/src/agent/control/residency.rs
++++ b/codex-rs/core/src/agent/control/residency.rs
+@@ -170,7 +170,7 @@ impl V2Residency {
+                 .get_thread(candidate_thread_id)
+                 .await
+                 .is_ok_and(|registered| Arc::ptr_eq(&registered, &candidate_thread))
+-                || !is_unloadable(candidate_thread.as_ref()).await
++                || !is_unloadable(manager.as_ref(), candidate_thread.as_ref()).await
+             {
+                 continue;
+             }
+@@ -263,7 +263,17 @@ pub(super) fn is_v2_resident_session_source(session_source: &SessionSource) -> b
+     matches!(session_source, SessionSource::SubAgent(_))
+ }
+ 
+-async fn is_unloadable(thread: &CodexThread) -> bool {
++async fn is_unloadable(manager: &ThreadManagerState, thread: &CodexThread) -> bool {
++    // A terminal nested parent still owns the mailbox for its resident children.
++    // Evicting it before a child reports its terminal result silently loses that
++    // result; evict a terminal child first, or refuse the new reservation.
++    let thread_id = thread.session.thread_id;
++    if manager.threads.read().await.values().any(|resident| {
++        resident.multi_agent_version() == Some(MultiAgentVersion::V2)
++            && resident.session_source.parent_thread_id() == Some(thread_id)
++    }) {
++        return false;
++    }
+     matches!(
+         thread.agent_status().await,
+         AgentStatus::Completed(_) | AgentStatus::Errored(_) | AgentStatus::Interrupted
+diff --git a/codex-rs/core/src/agent/control/residency_tests.rs b/codex-rs/core/src/agent/control/residency_tests.rs
+index 6f2cc44..c20ded8 100644
+--- a/codex-rs/core/src/agent/control/residency_tests.rs
++++ b/codex-rs/core/src/agent/control/residency_tests.rs
+@@ -7,6 +7,7 @@ use crate::config::test_config;
+ use crate::thread_manager::ThreadManagerState;
+ use codex_features::Feature;
+ use codex_login::CodexAuth;
++use codex_protocol::AgentPath;
+ use codex_protocol::ThreadId;
+ use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::protocol::EventMsg;
+@@ -70,6 +71,97 @@ async fn residency_slot_reservation_unloads_oldest_idle_v2_agent() {
+     assert!(manager.get_thread(second.thread_id).await.is_ok());
+ }
+ 
++#[test]
++fn residency_keeps_nested_parent_loaded_while_child_is_resident() {
++    // Nested thread construction exceeds the Windows test harness's small stack.
++    std::thread::Builder::new()
++        .stack_size(16 * 1024 * 1024)
++        .spawn(|| {
++            tokio::runtime::Builder::new_current_thread()
++                .enable_all()
++                .build()
++                .expect("test runtime")
++                .block_on(check_nested_parent_residency());
++        })
++        .expect("test thread")
++        .join()
++        .expect("nested residency test");
++}
++
++async fn check_nested_parent_residency() {
++    let mut config = test_config().await;
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    config.multi_agent_v2.max_concurrent_threads_per_session = 3;
++    let temp_home = tempfile::tempdir().expect("create temp home");
++    config.codex_home = temp_home.path().to_path_buf().try_into().unwrap();
++    config.cwd = temp_home.path().to_path_buf().try_into().unwrap();
++    let manager = ThreadManager::with_models_provider_and_home_for_tests(
++        CodexAuth::from_api_key("dummy"),
++        config.model_provider.clone(),
++        config.codex_home.to_path_buf(),
++        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
++    );
++    let root = manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("start root thread");
++    let control = manager.agent_control();
++    let state = control
++        .runtime
++        .upgrade()
++        .expect("thread manager should be live");
++
++    let parent_slot = control
++        .reserve_v2_residency_slot(&state, &config, None)
++        .await
++        .expect("parent resident slot");
++    let parent =
++        spawn_v2_subagent(&control, &state, config.clone(), root.thread_id, "worker").await;
++    parent_slot.commit(parent.thread_id);
++
++    let child_slot = control
++        .reserve_v2_residency_slot(&state, &config, None)
++        .await
++        .expect("child resident slot");
++    let child = Box::pin(state.spawn_new_thread_with_source(
++        config.clone(),
++        control.clone(),
++        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: parent.thread_id,
++            depth: 2,
++            agent_path: Some(AgentPath::try_from("/root/worker/grandchild").unwrap()),
++            agent_nickname: None,
++            agent_role: None,
++        }),
++        None,
++        Some(parent.thread_id),
++        None,
++        Some(ThreadSource::Subagent),
++        None,
++        None,
++        None,
++        None,
++    ))
++    .await
++    .expect("spawn nested child");
++    child_slot.commit(child.thread_id);
++    mark_thread_completed(parent.thread.as_ref()).await;
++
++    let err = match control
++        .reserve_v2_residency_slot(&state, &config, None)
++        .await
++    {
++        Ok(_) => panic!("nested parent must remain resident until child reports completion"),
++        Err(err) => err,
++    };
++    assert!(matches!(
++        err.details(),
++        CodexErrorDetails::AgentLimitReached { .. }
++    ));
++    assert!(manager.get_thread(parent.thread_id).await.is_ok());
++    assert!(manager.get_thread(child.thread_id).await.is_ok());
++}
++
+ #[tokio::test]
+ async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
+     let mut config = test_config().await;
 diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
-index 9b64298..0009e1c 100644
+index 9b64298..a92bc46 100644
 --- a/codex-rs/core/src/agent/control/spawn.rs
 +++ b/codex-rs/core/src/agent/control/spawn.rs
-@@ -850,6 +850,7 @@ impl LocalAgentControl {
+@@ -582,10 +582,22 @@ impl LocalAgentControl {
+                     ..Default::default()
+                 })
+         };
+-        // Reserving a slot can evict an idle nested parent. Capture its instructions
+-        // alongside its authority so the child does not depend on a later live lookup.
++        // Another reservation can run between our reservation and the child's publication.
++        // Pin a loaded parent through publication so that it keeps the result mailbox.
++        let parent_to_pin = if let Some((parent, _)) = parent.as_ref() {
++            Some(Arc::clone(parent))
++        } else if let Some(parent_thread_id) = parent_thread_id {
++            state.get_thread(parent_thread_id).await.ok()
++        } else {
++            None
++        };
++        let _parent_residency_pin = match parent_to_pin {
++            Some(parent) => self.runtime.pin_v2_residency(&state, &parent).await?,
++            None => None,
++        };
++        // A previously evicted parent's absence cannot be repaired by this reload.
+         let residency_slot = self
+-            .reserve_v2_residency_slot(&state, &config, Some(thread_id))
++            .reserve_v2_residency_slot(&state, &config, parent_thread_id.or(Some(thread_id)))
+             .await?;
+ 
+         match state
+@@ -850,6 +862,7 @@ impl LocalAgentControl {
                      communication,
                      context,
                      start_options,
@@ -949,6 +1117,72 @@ index ddaa1f1..e5a0d82 100644
          }),
          Op::Shutdown => Some(Op::Shutdown),
          _ => None,
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index 9c8268c..5dc068a 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -2138,7 +2138,7 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
+ }
+ 
+ #[tokio::test]
+-async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
++async fn multi_agent_v2_interrupted_turn_notifies_parent_once() {
+     let (mut session, mut turn) = make_session_and_context().await;
+     let manager = thread_manager();
+     let root = manager
+@@ -2198,20 +2198,32 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
+             (id == root.thread_id)
+                 .then_some(op)
+                 .and_then(|op| match op {
+-                    Op::InterAgentCommunication { communication, .. }
+-                        if communication.author.as_str() == "/root/worker"
+-                            && communication.recipient == AgentPath::root()
+-                            && communication.other_recipients.is_empty()
+-                            && !communication.trigger_turn =>
++                    Op::InterAgentCommunication {
++                        communication,
++                        wake_if_idle,
++                        ..
++                    } if communication.author.as_str() == "/root/worker"
++                        && communication.recipient == AgentPath::root() =>
+                     {
+-                        Some(communication.content)
++                        Some((communication, wake_if_idle))
+                     }
+                     _ => None,
+                 })
+         })
+         .collect::<Vec<_>>();
+ 
+-    assert_eq!(notifications, Vec::<String>::new());
++    let expected = format_inter_agent_completion_message(
++        AgentPath::root(),
++        AgentPath::try_from("/root/worker").expect("worker path"),
++        &AgentStatus::Interrupted,
++    )
++    .expect("interrupted status should render");
++    assert_eq!(notifications.len(), 1);
++    let (communication, wake_if_idle) = &notifications[0];
++    assert_eq!(communication.content, expected);
++    assert!(communication.other_recipients.is_empty());
++    assert!(!communication.trigger_turn);
++    assert!(*wake_if_idle);
+ }
+ 
+ #[tokio::test]
+diff --git a/codex-rs/core/tests/suite/agent_execution.rs b/codex-rs/core/tests/suite/agent_execution.rs
+index 480b5bb..1bfca53 100644
+--- a/codex-rs/core/tests/suite/agent_execution.rs
++++ b/codex-rs/core/tests/suite/agent_execution.rs
+@@ -369,6 +369,8 @@ async fn v2_residency_reload_preserves_inherited_environment_and_tools(
+         .with_model("gpt-5.6-sol")
+         .with_exec_server_url("none")
+         .with_config(|config| {
++            // Keep completion wakeups from adding turns to this residency sequence.
++            config.agent_wake_parent_on_completion = false;
+             for feature in [Feature::Collab, Feature::MultiAgentV2] {
+                 config
+                     .features
 diff --git a/codex-rs/core/tests/suite/compact_remote.rs b/codex-rs/core/tests/suite/compact_remote.rs
 index 76032f3..c60e092 100644
 --- a/codex-rs/core/tests/suite/compact_remote.rs
@@ -1049,6 +1283,32 @@ index 3fa281b..097e19d 100644
              })
              .await?;
      }
+diff --git a/codex-rs/core/tests/suite/subagent_notifications.rs b/codex-rs/core/tests/suite/subagent_notifications.rs
+index ccd44bb..5fd5a74 100644
+--- a/codex-rs/core/tests/suite/subagent_notifications.rs
++++ b/codex-rs/core/tests/suite/subagent_notifications.rs
+@@ -2809,6 +2809,8 @@ async fn multi_agent_v2_peer_followup_completion_notifies_initiating_turn() -> R
+     let mut builder = test_codex()
+         .with_model("gpt-5.6-sol")
+         .with_config(|config| {
++            // This scenario tests follow-up lineage independently of parent auto-wake.
++            config.agent_wake_parent_on_completion = false;
+             for feature in [Feature::Collab, Feature::MultiAgentV2] {
+                 config
+                     .features
+diff --git a/codex-rs/core/tests/suite/subagent_service_tier.rs b/codex-rs/core/tests/suite/subagent_service_tier.rs
+index 74d5592..906dcf6 100644
+--- a/codex-rs/core/tests/suite/subagent_service_tier.rs
++++ b/codex-rs/core/tests/suite/subagent_service_tier.rs
+@@ -63,6 +63,8 @@ fn assert_request_service_tier(request: &ResponseMock, expected: Option<&str>) {
+ }
+ 
+ fn configure_priority_role(config: &mut Config) {
++    // Keep automatic parent turns out of service-tier request cardinality checks.
++    config.agent_wake_parent_on_completion = false;
+     for feature in [Feature::Collab, Feature::MultiAgentV2] {
+         config
+             .features
 diff --git a/codex-rs/core/tests/suite/turn_input_submission.rs b/codex-rs/core/tests/suite/turn_input_submission.rs
 index 393cf8a..2ba16e5 100644
 --- a/codex-rs/core/tests/suite/turn_input_submission.rs
