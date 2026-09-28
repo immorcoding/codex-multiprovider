@@ -21,8 +21,12 @@
 不会将变化后的配置默认值当作显式模型或供应商覆盖。先设置
 `$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\codex.exe'`，再执行
 `node --test tools/model-routing.test.mjs`
-运行 mock 供应商行为测试。以下安装步骤仍针对默认的**旧版 0.154.0** 补丁；新版尚未包含旧补丁的
-中转、子代理与桌面集成功能；分叉与子代理继承仍待后续任务。
+运行 mock 供应商行为测试。[#10](https://github.com/immorcoding/codex-multiprovider/issues/10)
+的 `patch/fork-provider-binding-0.158.patch` 需在同一份 0.158.0 源码上**接着路由补丁应用**，
+然后重新构建 `codex-cli`。app-server 和 `codex exec fork` 继承来源线程的供应商及最后模型；
+显式同供应商模型可用，跨供应商分叉会报错，持久分叉恢复后仍保持绑定。安装脚本目前只构建
+路由补丁，若要使用分叉语义须手动应用增量补丁并重新构建。以下安装步骤仍针对默认的
+**旧版 0.154.0** 补丁；新版尚未包含旧补丁的中转、子代理与桌面集成功能；子代理继承另票处理。
 
 | 选择器里选 | 该会话的供应商 |
 | --- | --- |

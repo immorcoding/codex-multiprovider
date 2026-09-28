@@ -335,3 +335,89 @@ test('codex exec resume keeps the historical provider when the configured defaul
     assert.equal(requests.filter((request) => request.url === '/v1/default/responses').length, 0, JSON.stringify(requests));
   });
 });
+
+test('app-server fork inherits the source provider across changed defaults and resumes on that provider', { timeout: 90_000 }, async () => {
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
+  await fixture(async ({ home, cwd, requests, configure }) => {
+    const sourceId = await appServer(home, async (rpc, notifications) => {
+      const started = await rpc('thread/start', { cwd, model: 'routed-model', approvalPolicy: 'never', sandbox: 'read-only' });
+      await rpc('turn/start', { threadId: started.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+      await expectNotification(notifications, 'turn/completed');
+      return started.thread.id;
+    });
+    configure({ model: 'other-provider-model', mockOpenAiDefault: true });
+    const forkId = await appServer(home, async (rpc, notifications) => {
+      const forked = await rpc('thread/fork', { threadId: sourceId });
+      assert.equal(forked.modelProvider, 'mock_route');
+      assert.equal(forked.model, 'routed-model');
+      await rpc('turn/start', { threadId: forked.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+      await expectNotification(notifications, 'turn/completed');
+      return forked.thread.id;
+    });
+    await appServer(home, async (rpc, notifications) => {
+      const resumed = await rpc('thread/resume', { threadId: forkId });
+      assert.equal(resumed.modelProvider, 'mock_route');
+      await rpc('turn/start', { threadId: forkId, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+      await expectNotification(notifications, 'turn/completed');
+    });
+    assert.equal(requests.filter((request) => request.url === '/v1/responses' && request.body?.model === 'routed-model').length, 3);
+    assert.equal(requests.filter((request) => request.url === '/v1/default/responses').length, 0);
+  });
+});
+
+test('codex exec fork inherits the source provider instead of the changed CLI default', { timeout: 90_000 }, async () => {
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
+  await fixture(async ({ home, cwd, requests, configure }) => {
+    const started = await exec(binary, home, cwd);
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    const sourceId = started.stdout.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)).find((line) => line.type === 'thread.started')?.thread_id;
+    assert.ok(sourceId, started.stdout);
+    configure({ model: 'other-provider-model', mockOpenAiDefault: true });
+    const forked = await exec(binary, home, cwd, ['exec', 'fork', '--skip-git-repo-check', '--json', sourceId, 'Reply briefly.']);
+    assert.equal(forked.code, 0, `${forked.stdout}\n${forked.stderr}`);
+    const forkId = forked.stdout.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)).find((line) => line.type === 'thread.started')?.thread_id;
+    assert.ok(forkId && forkId !== sourceId, forked.stdout);
+    const resumed = await exec(binary, home, cwd, ['exec', 'resume', '--skip-git-repo-check', '--json', forkId, 'Reply briefly.']);
+    assert.equal(resumed.code, 0, `${resumed.stdout}\n${resumed.stderr}`);
+    assert.equal(requests.filter((request) => request.url === '/v1/responses' && request.body?.model === 'routed-model').length, 3);
+    assert.equal(requests.filter((request) => request.url === '/v1/default/responses').length, 0);
+  });
+});
+
+test('app-server fork accepts a same-provider model and rejects cross-provider selections', { timeout: 90_000 }, async () => {
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
+  await fixture(async ({ home, cwd, requests, configure }) => {
+    configure({ mockOpenAiDefault: true });
+    await appServer(home, async (rpc, notifications) => {
+      const source = await rpc('thread/start', { cwd, model: 'routed-model', approvalPolicy: 'never', sandbox: 'read-only' });
+      await rpc('turn/start', { threadId: source.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+      await expectNotification(notifications, 'turn/completed');
+      const sameProvider = await rpc('thread/fork', { threadId: source.thread.id, model: 'same-provider-model' });
+      assert.equal(sameProvider.modelProvider, 'mock_route');
+      assert.equal(sameProvider.model, 'same-provider-model');
+      await rpc('turn/start', { threadId: sameProvider.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+      await expectRequest(requests, '/v1/responses', 'same-provider-model');
+      await assert.rejects(rpc('thread/fork', { threadId: source.thread.id, model: 'other-provider-model' }), /other-provider-model.*openai.*mock_route/);
+      await assert.rejects(rpc('thread/fork', { threadId: source.thread.id, modelProvider: 'openai' }), /routed-model.*mock_route.*openai/);
+      assert.equal(requests.filter((request) => request.url === '/v1/default/responses').length, 0);
+    });
+  });
+});
+
+test('codex exec fork accepts a same-provider model and rejects a cross-provider model', { timeout: 90_000 }, async () => {
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
+  await fixture(async ({ home, cwd, requests, configure }) => {
+    configure({ mockOpenAiDefault: true });
+    const started = await exec(binary, home, cwd);
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    const sourceId = started.stdout.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line)).find((line) => line.type === 'thread.started')?.thread_id;
+    assert.ok(sourceId, started.stdout);
+    const sameProvider = await exec(binary, home, cwd, ['exec', 'fork', '--skip-git-repo-check', '--json', '-m', 'same-provider-model', sourceId, 'Reply briefly.']);
+    assert.equal(sameProvider.code, 0, `${sameProvider.stdout}\n${sameProvider.stderr}`);
+    await expectRequest(requests, '/v1/responses', 'same-provider-model');
+    const crossProvider = await exec(binary, home, cwd, ['exec', 'fork', '--skip-git-repo-check', '--json', '-m', 'other-provider-model', sourceId, 'Reply briefly.']);
+    assert.notEqual(crossProvider.code, 0);
+    assert.match(`${crossProvider.stdout}\n${crossProvider.stderr}`, /other-provider-model.*openai.*mock_route/);
+    assert.equal(requests.filter((request) => request.url === '/v1/default/responses').length, 0);
+  });
+});
