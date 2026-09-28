@@ -28,10 +28,12 @@ jobs:
           git -C upstream checkout --detach FETCH_HEAD
           test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
           test -z "$(git -C upstream status --porcelain)"
-      - name: Apply routing and session-binding patch
+      - name: Apply routing, session-binding, and fork-binding patches
         run: |
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
       - name: Build and check the patched crates
         working-directory: upstream/codex-rs
         run: |

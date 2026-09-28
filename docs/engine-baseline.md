@@ -36,3 +36,15 @@ just test -p codex-core load_config_resolves_agent_controls
 ```
 
 此补丁暂不由默认 `install-engine.ps1` 自动应用；后续路由补丁迁移票再处理组合构建与安装入口。
+
+## 分叉线程供应商绑定增量补丁（#10）
+
+[`patch/fork-provider-binding-0.158.patch`](../patch/fork-provider-binding-0.158.patch) 以 #8/#9 的
+`model-provider-routes-0.158.patch` 为前置，针对同一 `rust-v0.158.0` SHA。它在 fork 时继承来源线程
+的供应商和最后模型，拒绝显式跨供应商选择；`codex exec fork` 只传递 CLI 中显式选择的模型/供应商，
+不会把变化后的配置默认值误当成覆盖。持久分叉可按原供应商恢复。
+
+在干净 checkout 中依次 `git apply --check`、`git apply` 两个补丁后构建 `codex-cli`，并用构建出的
+`codex.exe` 设置 `CODEX_TEST_ROUTED_BINARY` 运行 `node --test tools/model-routing.test.mjs`。
+目前安装脚本的 `-RoutingPatch` 只应用第一份补丁；增量补丁需要手动应用并重新构建，不修改
+Microsoft Store 引擎。

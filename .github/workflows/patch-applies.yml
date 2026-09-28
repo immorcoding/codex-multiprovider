@@ -73,3 +73,24 @@ jobs:
             echo "::error::expected the patch to touch or add at least 10 files, saw $changed"
             exit 1
           fi
+
+  fork-binding-patch-applies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PIN_SHA: 064c6b8c737f5b41d171fdda80bd9ef10ad06eb3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the stable source and apply routing then fork binding
+        run: |
+          set -euo pipefail
+          git init upstream
+          git -C upstream remote add origin https://github.com/openai/codex.git
+          git -C upstream fetch --depth 1 origin "$PIN_SHA"
+          git -C upstream checkout --detach FETCH_HEAD
+          test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
+          test -f upstream/codex-rs/Cargo.toml
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"

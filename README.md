@@ -22,9 +22,14 @@ reject cross-provider models before sending a request. `codex exec resume` does 
 configuration default into an explicit model/provider override. Run the mock-provider
 behavior tests with `$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\codex.exe'` followed by
 `node --test tools/model-routing.test.mjs`.
-The setup below still describes the **legacy 0.154.0** patch and remains the default installer mode;
-the 0.158.0 patch does not include its proxy, subagent, or desktop integration additions. Fork and
-subagent inheritance remain separate follow-up work.
+For [#10](https://github.com/immorcoding/codex-multiprovider/issues/10), apply
+`patch/fork-provider-binding-0.158.patch` **after** the routing patch on the same 0.158.0 source,
+then rebuild `codex-cli`. App-server and `codex exec fork` inherit the source provider and last
+model; an explicit same-provider model is allowed, while cross-provider forks fail. A persisted fork
+retains that binding when resumed. The installer currently builds only the routing patch, so apply
+this incremental patch and rebuild before using the fork behavior. The setup below still describes
+the **legacy 0.154.0** default installer mode; these 0.158.0 patches do not include its proxy,
+subagent, or desktop integration additions. Subagent inheritance remains separate follow-up work.
 
 | Picker choice | Provider of that session |
 | --- | --- |
