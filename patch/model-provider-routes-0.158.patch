@@ -1,3 +1,232 @@
+diff --git a/codex-rs/app-server/src/request_processors.rs b/codex-rs/app-server/src/request_processors.rs
+index a00b6eb..469f6a3 100644
+--- a/codex-rs/app-server/src/request_processors.rs
++++ b/codex-rs/app-server/src/request_processors.rs
+@@ -561,11 +561,13 @@ mod projects;
+ mod remote_control_processor;
+ mod rollout;
+ mod search;
++mod session_provider_binding;
+ mod thread_attachments;
+ mod thread_enrichment;
+ mod thread_fork_goal;
+ mod thread_input;
+ mod thread_processor;
++use session_provider_binding::ensure_model_provider_binding;
+ mod thread_queue_processor;
+ mod thread_sections;
+ mod token_usage_replay;
+@@ -633,6 +635,7 @@ fn resolve_request_cwd(cwd: Option<PathBuf>) -> Result<Option<AbsolutePathBuf>,
+     .transpose()
+ }
+ 
++/// A thread's provider cannot change when its model changes on a later turn.
+ fn resolve_turn_environment_selections(
+     thread_manager: &ThreadManager,
+     environments: Option<Vec<TurnEnvironmentParams>>,
+diff --git a/codex-rs/app-server/src/request_processors/session_provider_binding.rs b/codex-rs/app-server/src/request_processors/session_provider_binding.rs
+new file mode 100644
+index 0000000..9267d12
+--- /dev/null
++++ b/codex-rs/app-server/src/request_processors/session_provider_binding.rs
+@@ -0,0 +1,101 @@
++//! Preserve a thread's provider across model changes and resumed histories.
++
++use super::*;
++
++pub(super) fn ensure_model_provider_binding(
++    config: &Config,
++    bound_provider: &str,
++    model: &str,
++) -> Result<(), JSONRPCErrorError> {
++    let selected_provider = config
++        .model_provider_routes
++        .get(model)
++        .map(String::as_str)
++        .unwrap_or(&config.unrouted_model_provider_id);
++    if selected_provider != bound_provider {
++        return Err(invalid_request(format!(
++            "model `{model}` resolves to model provider `{selected_provider}` and cannot run on session provider `{bound_provider}`"
++        )));
++    }
++    Ok(())
++}
++
++pub(super) fn historical_provider(
++    source: Option<&StoredThread>,
++    metadata: Option<&ThreadMetadata>,
++    history: &InitialHistory,
++) -> Option<String> {
++    source
++        .map(|thread| thread.model_provider.as_str())
++        .filter(|provider| !provider.is_empty())
++        .or_else(|| metadata.map(|metadata| metadata.model_provider.as_str()))
++        .or_else(|| match history {
++            InitialHistory::Resumed(resumed) => resumed.history.iter().find_map(|item| {
++                if let RolloutItem::SessionMeta(meta) = item
++                    && meta.meta.id == resumed.conversation_id
++                {
++                    meta.meta.model_provider.as_deref()
++                } else {
++                    None
++                }
++            }),
++            _ => None,
++        })
++        .map(str::to_string)
++}
++
++pub(super) fn ensure_resumed_provider_binding(
++    config: &Config,
++    bound_provider: Option<&str>,
++    persisted_model: Option<&str>,
++) -> Result<(), JSONRPCErrorError> {
++    if let Some(bound_provider) = bound_provider
++        && config.model_provider_id != bound_provider
++    {
++        let model = config
++            .model
++            .as_deref()
++            .or(persisted_model)
++            .unwrap_or("<default>");
++        return Err(invalid_request(format!(
++            "model `{model}` resolves to model provider `{}` and cannot run on session provider `{bound_provider}`",
++            config.model_provider_id
++        )));
++    }
++    Ok(())
++}
++
++pub(super) async fn ensure_running_resume_provider_binding(
++    thread: &CodexThread,
++    params: &ThreadResumeParams,
++    snapshot: &ThreadConfigSnapshot,
++) -> Result<(), JSONRPCErrorError> {
++    let requested_model = params.model.as_deref().or_else(|| {
++        params
++            .config
++            .as_ref()
++            .and_then(|config| config.get("model"))
++            .and_then(serde_json::Value::as_str)
++    });
++    let requested_provider = params.model_provider.as_deref().or_else(|| {
++        params
++            .config
++            .as_ref()
++            .and_then(|config| config.get("model_provider"))
++            .and_then(serde_json::Value::as_str)
++    });
++    if let Some(model) = requested_model {
++        let thread_config = thread.config().await;
++        ensure_model_provider_binding(thread_config.as_ref(), &snapshot.model_provider_id, model)?;
++    }
++    if let Some(provider) = requested_provider
++        && provider != snapshot.model_provider_id
++    {
++        let model = requested_model.unwrap_or(&snapshot.model);
++        return Err(invalid_request(format!(
++            "model `{model}` requests model provider `{provider}` and cannot run on session provider `{}`",
++            snapshot.model_provider_id
++        )));
++    }
++    Ok(())
++}
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index 055edd1..ea86287 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -6,6 +6,9 @@ mod daemon_snapshot;
+ 
+ use super::persisted_resume_settings::PersistedResumeSettings;
+ use super::persisted_resume_settings::latest_persisted_resume_settings;
++use super::session_provider_binding::ensure_resumed_provider_binding;
++use super::session_provider_binding::ensure_running_resume_provider_binding;
++use super::session_provider_binding::historical_provider;
+ use super::thread_enrichment::enrich_loaded_threads;
+ use super::thread_fork_goal::inherit_thread_goal_snapshot;
+ use super::thread_input::can_accept_direct_input;
+@@ -230,6 +233,19 @@ fn merge_persisted_resume_metadata(
+     typesafe_overrides: &mut ConfigOverrides,
+     persisted_metadata: &ThreadMetadata,
+ ) {
++    // A provider-only selection is not a model change: keep the historical model
++    // instead of accidentally pairing the requested provider with a new default.
++    let explicit_model = typesafe_overrides.model.is_some()
++        || request_overrides
++            .as_ref()
++            .is_some_and(|overrides| overrides.contains_key("model"));
++    let explicit_provider = typesafe_overrides.model_provider.is_some()
++        || request_overrides
++            .as_ref()
++            .is_some_and(|overrides| overrides.contains_key("model_provider"));
++    if !explicit_model && explicit_provider {
++        typesafe_overrides.model = persisted_metadata.model.clone();
++    }
+     if has_model_resume_override(request_overrides.as_ref(), typesafe_overrides) {
+         return;
+     }
+@@ -276,6 +292,7 @@ fn has_model_resume_override(
+     typesafe_overrides.model.is_some()
+         || typesafe_overrides.model_provider.is_some()
+         || request_overrides.is_some_and(|overrides| overrides.contains_key("model"))
++        || request_overrides.is_some_and(|overrides| overrides.contains_key("model_provider"))
+         || request_overrides
+             .is_some_and(|overrides| overrides.contains_key("model_reasoning_effort"))
+ }
+@@ -3902,6 +3919,15 @@ impl ThreadRequestProcessor {
+             )
+             .await;
+ 
++        let bound_provider = historical_provider(
++            resume_source_thread.as_ref(),
++            persisted_metadata.as_ref(),
++            &thread_history,
++        );
++        let persisted_model = persisted_metadata
++            .as_ref()
++            .and_then(|metadata| metadata.model.clone());
++
+         let clear_reasoning_effort = !has_explicit_model_resume_override
+             && persisted_metadata
+                 .as_ref()
+@@ -3939,6 +3965,12 @@ impl ThreadRequestProcessor {
+             config.model_reasoning_effort = None;
+         }
+ 
++        ensure_resumed_provider_binding(
++            &config,
++            bound_provider.as_deref(),
++            persisted_model.as_deref(),
++        )?;
++
+         let response_history = thread_history.clone();
+ 
+         match self
+@@ -4306,6 +4338,8 @@ impl ThreadRequestProcessor {
+                 )));
+             }
+             let config_snapshot = existing_thread.config_snapshot().await;
++            ensure_running_resume_provider_binding(&existing_thread, params, &config_snapshot)
++                .await?;
+             let mismatch_details = collect_resume_override_mismatches(params, &config_snapshot);
+             if !mismatch_details.is_empty() {
+                 let has_subscribers = !self
+diff --git a/codex-rs/app-server/src/request_processors/turn_processor.rs b/codex-rs/app-server/src/request_processors/turn_processor.rs
+index e42e53d..d82f8d4 100644
+--- a/codex-rs/app-server/src/request_processors/turn_processor.rs
++++ b/codex-rs/app-server/src/request_processors/turn_processor.rs
+@@ -804,6 +804,11 @@ impl TurnRequestProcessor {
+             ));
+         }
+ 
++        if let Some(model) = model.as_deref() {
++            let thread_config = thread.config().await;
++            ensure_model_provider_binding(&thread_config, &thread_config.model_provider_id, model)?;
++        }
++
+         let collaboration_mode =
+             collaboration_mode.map(|mode| self.normalize_collaboration_mode(mode));
+         let has_environment_override = environments.is_some();
 diff --git a/codex-rs/config/src/config_toml.rs b/codex-rs/config/src/config_toml.rs
 index 3369f46..ff9d0d7 100644
 --- a/codex-rs/config/src/config_toml.rs
@@ -33,10 +262,20 @@ index f653c99..26e5b4b 100644
        "additionalProperties": {
          "$ref": "#/definitions/ModelProviderInfo"
 diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
-index a782af1..2fc4870 100644
+index a782af1..81e19f4 100644
 --- a/codex-rs/core/src/config/mod.rs
 +++ b/codex-rs/core/src/config/mod.rs
-@@ -900,6 +900,9 @@ pub struct Config {
+@@ -644,6 +644,9 @@ pub struct Config {
+     /// Key into the model_providers map that specifies which provider to use.
+     pub model_provider_id: String,
+ 
++    /// Provider for models absent from model_provider_routes, before a model route selects one.
++    pub unrouted_model_provider_id: String,
++
+     /// Info needed to make an API request to the model.
+     pub model_provider: ModelProviderInfo,
+ 
+@@ -900,6 +903,9 @@ pub struct Config {
      /// Combined provider map (defaults plus user-defined providers).
      pub model_providers: HashMap<String, ModelProviderInfo>,
  
@@ -46,7 +285,7 @@ index a782af1..2fc4870 100644
      /// Maximum total bytes of project instruction content across all selected environments.
      pub project_doc_max_bytes: usize,
  
-@@ -3801,9 +3804,32 @@ impl Config {
+@@ -3801,9 +3807,37 @@ impl Config {
              merge_configured_model_providers(built_in_model_providers(openai_base_url), cfg.model_providers)
                  .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
  
@@ -62,6 +301,11 @@ index a782af1..2fc4870 100644
 +
 +        let selected_model = model.as_ref().or(cfg.model.as_ref());
 +        let routed_provider = selected_model.and_then(|model| cfg.model_provider_routes.get(model));
++        let unrouted_model_provider_id = config_layer_stack
++            .required_model_provider()
++            .map(str::to_string)
++            .or_else(|| cfg.model_provider.clone())
++            .unwrap_or_else(|| "openai".to_string());
 +        let explicit_provider = config_layer_stack.required_model_provider().map(str::to_string)
              .or(model_provider)
 -            .or(cfg.model_provider)
@@ -81,7 +325,15 @@ index a782af1..2fc4870 100644
              .unwrap_or_else(|| "openai".to_string());
          let model_provider = model_providers
              .get(&model_provider_id)
-@@ -4324,6 +4350,7 @@ impl Config {
+@@ -4265,6 +4299,7 @@ impl Config {
+                 .model_post_turn_compact_threshold_percent
+                 .unwrap_or_default(),
+             model_provider_id,
++            unrouted_model_provider_id,
+             model_provider,
+             cwd: resolved_cwd,
+             workspace_roots: workspace_roots.clone(),
+@@ -4324,6 +4359,7 @@ impl Config {
                  .map(Duration::from_millis)
                  .unwrap_or(DEFAULT_OPTIONAL_MCP_STARTUP_GRACE),
              model_providers,
@@ -89,3 +341,147 @@ index a782af1..2fc4870 100644
              project_doc_max_bytes: cfg.project_doc_max_bytes.unwrap_or(AGENTS_MD_MAX_BYTES),
              project_doc_fallback_filenames: cfg
                  .project_doc_fallback_filenames
+diff --git a/codex-rs/exec/src/lib.rs b/codex-rs/exec/src/lib.rs
+index 4cffddd..9ae56ff 100644
+--- a/codex-rs/exec/src/lib.rs
++++ b/codex-rs/exec/src/lib.rs
+@@ -10,6 +10,7 @@ mod event_processor;
+ mod event_processor_with_human_output;
+ pub(crate) mod event_processor_with_jsonl_output;
+ pub(crate) mod exec_events;
++mod resume_model_selection;
+ mod worktree;
+ 
+ pub use cli::Cli;
+@@ -148,6 +149,7 @@ pub use exec_events::TurnFailedEvent;
+ pub use exec_events::TurnStartedEvent;
+ pub use exec_events::Usage;
+ pub use exec_events::WebSearchItem;
++use resume_model_selection::ResumeModelSelection;
+ use serde_json::Value;
+ use std::collections::HashMap;
+ use std::future::Future;
+@@ -218,6 +220,7 @@ struct ExecRunArgs {
+     command: Option<ExecCommand>,
+     config: Config,
+     resume_approvals_reviewer_override: Option<codex_app_server_protocol::ApprovalsReviewer>,
++    resume_model_selection: ResumeModelSelection,
+     dangerously_bypass_approvals_and_sandbox: bool,
+     exec_span: tracing::Span,
+     images: Vec<PathBuf>,
+@@ -556,6 +559,13 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
+         None // No OSS mode enabled
+     };
+ 
++    let resume_model_overridden =
++        model_cli_arg.is_some() || cli_kv_overrides.iter().any(|(key, _)| key == "model");
++    let resume_provider_overridden = oss
++        || cli_kv_overrides
++            .iter()
++            .any(|(key, _)| key == "model_provider");
++
+     // When using `--oss`, let the bootstrapper pick the model based on selected provider
+     let model = if let Some(model) = model_cli_arg {
+         Some(model)
+@@ -731,12 +741,19 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
+         opt_out_notification_methods: Vec::new(),
+         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+     };
++    let resume_model_selection = ResumeModelSelection {
++        model: resume_model_overridden
++            .then(|| config.model.clone())
++            .flatten(),
++        provider: resume_provider_overridden.then(|| config.model_provider_id.clone()),
++    };
+     run_exec_session(ExecRunArgs {
+         in_process_start_args,
+         state_db,
+         command,
+         config,
+         resume_approvals_reviewer_override,
++        resume_model_selection,
+         dangerously_bypass_approvals_and_sandbox,
+         exec_span: exec_span.clone(),
+         images,
+@@ -837,6 +854,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
+         command,
+         config,
+         resume_approvals_reviewer_override,
++        resume_model_selection,
+         dangerously_bypass_approvals_and_sandbox,
+         exec_span,
+         images,
+@@ -1004,6 +1022,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
+                         &config,
+                         thread_id,
+                         resume_approvals_reviewer_override,
++                        resume_model_selection,
+                     ),
+                 },
+                 "thread/resume",
+@@ -1387,6 +1406,7 @@ fn thread_resume_params_from_config(
+     config: &Config,
+     thread_id: String,
+     approvals_reviewer_override: Option<codex_app_server_protocol::ApprovalsReviewer>,
++    selection: ResumeModelSelection,
+ ) -> ThreadResumeParams {
+     let permissions = permissions_selection_from_config(config);
+     let sandbox = permissions.is_none().then(|| {
+@@ -1397,8 +1417,8 @@ fn thread_resume_params_from_config(
+     });
+     ThreadResumeParams {
+         thread_id,
+-        model: config.model.clone(),
+-        model_provider: Some(config.model_provider_id.clone()),
++        model: selection.model,
++        model_provider: selection.provider,
+         cwd: Some(config.cwd.to_string_lossy().to_string()),
+         runtime_workspace_roots: Some(config.workspace_roots.clone()),
+         approval_policy: Some(config.permissions.approval_policy.value().into()),
+diff --git a/codex-rs/exec/src/lib_tests.rs b/codex-rs/exec/src/lib_tests.rs
+index fb79e7b..89ca90f 100644
+--- a/codex-rs/exec/src/lib_tests.rs
++++ b/codex-rs/exec/src/lib_tests.rs
+@@ -545,11 +545,13 @@ async fn thread_resume_params_only_include_explicit_review_policy_override() {
+         &config,
+         "thread-id".to_string(),
+         /*approvals_reviewer_override*/ None,
++        ResumeModelSelection::default(),
+     );
+     let params_with_override = thread_resume_params_from_config(
+         &config,
+         "thread-id".to_string(),
+         Some(codex_app_server_protocol::ApprovalsReviewer::AutoReview),
++        ResumeModelSelection::default(),
+     );
+ 
+     assert_eq!(params_without_override.approvals_reviewer, None);
+@@ -699,6 +701,7 @@ async fn thread_lifecycle_params_preserve_hook_trust_bypass() {
+         &config,
+         "thread-id".to_string(),
+         /*approvals_reviewer_override*/ None,
++        ResumeModelSelection::default(),
+     );
+ 
+     assert_eq!(start_params.config, expected_config);
+@@ -735,6 +738,7 @@ async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile()
+         &config,
+         "thread-id".to_string(),
+         /*approvals_reviewer_override*/ None,
++        ResumeModelSelection::default(),
+     );
+ 
+     assert_eq!(config.permissions.active_permission_profile(), None);
+diff --git a/codex-rs/exec/src/resume_model_selection.rs b/codex-rs/exec/src/resume_model_selection.rs
+new file mode 100644
+index 0000000..980f128
+--- /dev/null
++++ b/codex-rs/exec/src/resume_model_selection.rs
+@@ -0,0 +1,7 @@
++//! Only explicit CLI selections may override the binding of a resumed thread.
++
++#[derive(Default)]
++pub(super) struct ResumeModelSelection {
++    pub(super) model: Option<String>,
++    pub(super) provider: Option<String>,
++}

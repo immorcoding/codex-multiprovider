@@ -11,15 +11,18 @@
 让 Codex 桌面端的选择器也能列出第二家供应商（默认 DeepSeek）的模型，并让每个会话固定在它启动时的
 供应商上。桌面客户端不做任何修改。
 
-[#8](https://github.com/immorcoding/codex-multiprovider/issues/8) 的新版 **0.158.0 纯路由**补丁为
+[#8](https://github.com/immorcoding/codex-multiprovider/issues/8) 与
+[#9](https://github.com/immorcoding/codex-multiprovider/issues/9) 的新版 **0.158.0 路由与会话绑定**补丁为
 `patch/model-provider-routes-0.158.patch`。在干净的 `rust-v0.158.0` checkout 上执行
 `powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1 -RoutingPatch -EnginePath C:\path\to\codex -Profile debug`。
 它使 `thread/start` 与 `codex exec` 按 `[model_provider_routes]` 选择供应商，明确拒绝显式冲突
-和不存在的供应商；未映射模型保留默认供应商。先设置
+和不存在的供应商；未映射模型保留默认供应商。冷恢复保留历史供应商，`turn/start` 和
+`thread/settings/update` 允许同供应商模型、在请求发出前拒绝跨供应商模型；`codex exec resume`
+不会将变化后的配置默认值当作显式模型或供应商覆盖。先设置
 `$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\codex.exe'`，再执行
 `node --test tools/model-routing.test.mjs`
 运行 mock 供应商行为测试。以下安装步骤仍针对默认的**旧版 0.154.0** 补丁；新版尚未包含旧补丁的
-中转、子代理与桌面集成功能。
+中转、子代理与桌面集成功能；分叉与子代理继承仍待后续任务。
 
 | 选择器里选 | 该会话的供应商 |
 | --- | --- |

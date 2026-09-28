@@ -16,7 +16,7 @@
   pinned commit and have no modified files.
 
   With -BaselineOnly, the script pins the latest validated stable release without a patch.
-  With -RoutingPatch, it applies the model-routing-only patch to that stable release. Neither
+  With -RoutingPatch, it applies the model-routing and session-binding patch to that stable release. Neither
   mode changes the legacy default installer path or the Microsoft Store desktop engine.
 
   What it cannot do for you: Node.js and the compatibility proxy, the provider API key, and the
@@ -36,7 +36,7 @@
   for validating the new baseline while the provider-routing patch is being ported separately.
 
 .PARAMETER RoutingPatch
-  Build the stable 0.158.0 engine with only the model-provider routing patch from issue #8.
+  Build the stable 0.158.0 engine with the model-provider routing and session-binding patch from issues #8/#9.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File install-engine.ps1
@@ -210,7 +210,7 @@ if ($BaselineOnly) {
     return
 }
 if ($RoutingPatch) {
-    Write-Note 'This engine contains model-provider routing only; legacy proxy and agent additions are not included.'
+    Write-Note 'This engine contains model-provider routing and session binding; legacy proxy and agent additions are not included.'
     Write-Note 'Configure model_providers and model_provider_routes in an isolated CODEX_HOME to try it.'
     return
 }
