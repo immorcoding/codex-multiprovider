@@ -1,0 +1,764 @@
+diff --git a/codex-rs/app-server/tests/suite/v2/mod.rs b/codex-rs/app-server/tests/suite/v2/mod.rs
+index 51f3e06..698940d 100644
+--- a/codex-rs/app-server/tests/suite/v2/mod.rs
++++ b/codex-rs/app-server/tests/suite/v2/mod.rs
+@@ -85,6 +85,7 @@ mod model_provider_enforcement;
+ mod multi_agent_v2_developer_instructions;
+ mod otel;
+ mod output_schema;
++mod parent_completion_wake;
+ mod permission_profile_list;
+ mod plan_item;
+ mod plugin_install;
+diff --git a/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
+new file mode 100644
+index 0000000..1a97199
+--- /dev/null
++++ b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
+@@ -0,0 +1,540 @@
++//! Parent completion delivery is observable through the app-server turn stream.
++
++use anyhow::Result;
++use app_test_support::MockResponsesConfig;
++use app_test_support::TestAppServer;
++use app_test_support::write_models_cache;
++use codex_app_server_protocol::ClientRequest;
++use codex_app_server_protocol::ThreadStartParams;
++use codex_app_server_protocol::TurnCompletedNotification;
++use codex_app_server_protocol::TurnInterruptParams;
++use codex_app_server_protocol::TurnInterruptResponse;
++use codex_app_server_protocol::TurnStartParams;
++use codex_app_server_protocol::TurnStartResponse;
++use codex_app_server_protocol::TurnStartedNotification;
++use codex_app_server_protocol::TurnStatus;
++use codex_app_server_protocol::UserInput;
++use core_test_support::responses;
++use pretty_assertions::assert_eq;
++use serde_json::json;
++use std::time::Duration;
++use tempfile::TempDir;
++use tokio::time::timeout;
++
++const PARENT_PROMPT: &str = "spawn the completion worker";
++const CHILD_PROMPT: &str = "finish the completion task";
++const SPAWN_CALL_ID: &str = "completion-spawn";
++const NEXT_USER_PROMPT: &str = "read the queued completion";
++
++#[test_case::test_case(true, false; "completed_wake")]
++#[test_case::test_case(true, true; "errored_wake")]
++#[test_case::test_case(false, false; "completed_queued")]
++#[test_case::test_case(false, true; "errored_queued")]
++#[tokio::test]
++async fn terminal_child_obeys_parent_wake_switch(wake_enabled: bool, error: bool) -> Result<()> {
++    let server = responses::start_mock_server().await;
++    responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(PARENT_PROMPT) && !body.contains(SPAWN_CALL_ID)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-spawn"),
++            responses::ev_function_call_with_namespace(
++                SPAWN_CALL_ID,
++                "collaboration",
++                "spawn_agent",
++                &serde_json::to_string(&json!({
++                    "message": CHILD_PROMPT,
++                    "task_name": "worker",
++                    "fork_turns": "none",
++                }))?,
++            ),
++            responses::ev_completed("parent-spawn"),
++        ]),
++    )
++    .await;
++    responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(SPAWN_CALL_ID) && !body.contains("Message Type: FINAL_ANSWER")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-finished"),
++            responses::ev_assistant_message("parent-message", "parent waiting"),
++            responses::ev_completed("parent-finished"),
++        ]),
++    )
++    .await;
++    let child_events = if error {
++        vec![responses::ev_response_created("child-finished")]
++    } else {
++        vec![
++            responses::ev_response_created("child-finished"),
++            responses::ev_assistant_message("child-message", "child done"),
++            responses::ev_completed("child-finished"),
++        ]
++    };
++    let child = responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| String::from_utf8_lossy(&request.body).contains(CHILD_PROMPT),
++        responses::sse_response(responses::sse(child_events)).set_delay(Duration::from_millis(750)),
++    )
++    .await;
++    let expected_payload = if error {
++        "Agent errored:"
++    } else {
++        "child done"
++    };
++    let wake = responses::mount_sse_once_match(
++        &server,
++        move |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains("Message Type: FINAL_ANSWER") && body.contains(expected_payload)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-woken"),
++            responses::ev_assistant_message("wake-message", "parent resumed"),
++            responses::ev_completed("parent-woken"),
++        ]),
++    )
++    .await;
++
++    let codex_home = TempDir::new()?;
++    MockResponsesConfig::new(&server.uri())
++        .with_extra_config(&format!(
++            "[features.multi_agent_v2]\nenabled = true\n[agents]\nwake_parent_on_completion = {wake_enabled}"
++        ))
++        .write(codex_home.path())?;
++    write_models_cache(codex_home.path()).await?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .build_initialized()
++        .await?;
++    let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
++    let initial = timeout(
++        Duration::from_secs(25),
++        app.start_turn_and_wait_for_completion(TurnStartParams {
++            thread_id: parent.id.clone(),
++            input: vec![UserInput::Text {
++                text: PARENT_PROMPT.to_string(),
++                text_elements: Vec::new(),
++            }],
++            ..Default::default()
++        }),
++    )
++    .await??;
++    let next_turn_id = if wake_enabled {
++        let started = timeout(
++            Duration::from_secs(10),
++            app.read_stream_until_matching_notification("parent wake", |notification| {
++                notification.method == "turn/started"
++                    && notification.params.as_ref().is_some_and(|params| {
++                        params["threadId"] == parent.id && params["turn"]["id"] != initial.turn.id
++                    })
++            }),
++        )
++        .await??;
++        let started: TurnStartedNotification =
++            serde_json::from_value(started.params.expect("turn start params"))?;
++        timeout(
++            Duration::from_secs(10),
++            app.read_stream_until_matching_notification("parent wake completion", |notification| {
++                notification.method == "turn/completed"
++                    && notification.params.as_ref().is_some_and(|params| {
++                        params["threadId"] == parent.id && params["turn"]["id"] == started.turn.id
++                    })
++            }),
++        )
++        .await??;
++        started.turn.id
++    } else {
++        timeout(
++            Duration::from_secs(10),
++            app.read_stream_until_matching_notification("child completion", |notification| {
++                notification.method == "turn/completed"
++                    && notification
++                        .params
++                        .as_ref()
++                        .is_some_and(|params| params["threadId"] != parent.id)
++            }),
++        )
++        .await??;
++        assert!(
++            timeout(
++                Duration::from_millis(400),
++                app.read_stream_until_matching_notification(
++                    "unexpected parent wake",
++                    |notification| {
++                        notification.method == "turn/started"
++                            && notification.params.as_ref().is_some_and(|params| {
++                                params["threadId"] == parent.id
++                                    && params["turn"]["id"] != initial.turn.id
++                            })
++                    }
++                ),
++            )
++            .await
++            .is_err()
++        );
++        timeout(
++            Duration::from_secs(10),
++            app.start_turn_and_wait_for_completion(TurnStartParams {
++                thread_id: parent.id.clone(),
++                input: vec![UserInput::Text {
++                    text: NEXT_USER_PROMPT.to_string(),
++                    text_elements: Vec::new(),
++                }],
++                ..Default::default()
++            }),
++        )
++        .await??
++        .turn
++        .id
++    };
++    assert_eq!(child.requests().len(), 1);
++    assert_eq!(wake.requests().len(), 1);
++    assert!(
++        timeout(
++            Duration::from_millis(300),
++            app.read_stream_until_matching_notification(
++                "unexpected extra parent turn",
++                |notification| {
++                    notification.method == "turn/started"
++                        && notification.params.as_ref().is_some_and(|params| {
++                            params["threadId"] == parent.id
++                                && params["turn"]["id"] != initial.turn.id
++                                && params["turn"]["id"] != next_turn_id
++                        })
++                }
++            ),
++        )
++        .await
++        .is_err()
++    );
++    Ok(())
++}
++
++#[tokio::test]
++async fn interrupted_child_notifies_and_wakes_idle_parent_once() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(PARENT_PROMPT) && !body.contains(SPAWN_CALL_ID)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-spawn"),
++            responses::ev_function_call_with_namespace(
++                SPAWN_CALL_ID,
++                "collaboration",
++                "spawn_agent",
++                &serde_json::to_string(&json!({
++                    "message": CHILD_PROMPT,
++                    "task_name": "worker",
++                    "fork_turns": "none",
++                }))?,
++            ),
++            responses::ev_completed("parent-spawn"),
++        ]),
++    )
++    .await;
++    responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(SPAWN_CALL_ID) && !body.contains("Message Type: FINAL_ANSWER")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-finished"),
++            responses::ev_assistant_message("parent-message", "parent waiting"),
++            responses::ev_completed("parent-finished"),
++        ]),
++    )
++    .await;
++    let child = responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| String::from_utf8_lossy(&request.body).contains(CHILD_PROMPT),
++        responses::sse_response(responses::sse(vec![
++            responses::ev_response_created("child-finished"),
++            responses::ev_assistant_message("child-message", "too late"),
++            responses::ev_completed("child-finished"),
++        ]))
++        .set_delay(Duration::from_secs(8)),
++    )
++    .await;
++    let wake = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains("Message Type: FINAL_ANSWER") && body.contains("Agent interrupted.")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-woken"),
++            responses::ev_assistant_message("wake-message", "parent saw interruption"),
++            responses::ev_completed("parent-woken"),
++        ]),
++    )
++    .await;
++
++    let codex_home = TempDir::new()?;
++    MockResponsesConfig::new(&server.uri())
++        .with_extra_config("[features.multi_agent_v2]\nenabled = true")
++        .write(codex_home.path())?;
++    write_models_cache(codex_home.path()).await?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .build_initialized()
++        .await?;
++    let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
++    let initial = timeout(
++        Duration::from_secs(25),
++        app.start_turn_and_wait_for_completion(TurnStartParams {
++            thread_id: parent.id.clone(),
++            input: vec![UserInput::Text {
++                text: PARENT_PROMPT.to_string(),
++                text_elements: Vec::new(),
++            }],
++            ..Default::default()
++        }),
++    )
++    .await??;
++    timeout(Duration::from_secs(5), async {
++        loop {
++            if child.requests().len() == 1 {
++                break;
++            }
++            tokio::task::yield_now().await;
++        }
++    })
++    .await?;
++    let child_started = timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("child turn started", |notification| {
++            notification.method == "turn/started"
++                && notification
++                    .params
++                    .as_ref()
++                    .is_some_and(|params| params["threadId"] != parent.id)
++        }),
++    )
++    .await??;
++    let child_started: TurnStartedNotification =
++        serde_json::from_value(child_started.params.expect("child turn start params"))?;
++    let _: TurnInterruptResponse = app
++        .request(|request_id| ClientRequest::TurnInterrupt {
++            request_id,
++            params: TurnInterruptParams {
++                thread_id: child_started.thread_id.clone(),
++                turn_id: child_started.turn.id,
++            },
++        })
++        .await?;
++    let interrupted = timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("child interrupted", |notification| {
++            notification.method == "turn/completed"
++                && notification
++                    .params
++                    .as_ref()
++                    .is_some_and(|params| params["threadId"] == child_started.thread_id)
++        }),
++    )
++    .await??;
++    let interrupted: TurnCompletedNotification =
++        serde_json::from_value(interrupted.params.expect("child completion params"))?;
++    assert_eq!(interrupted.turn.status, TurnStatus::Interrupted);
++    let parent_wake = timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("parent wake", |notification| {
++            notification.method == "turn/started"
++                && notification.params.as_ref().is_some_and(|params| {
++                    params["threadId"] == parent.id && params["turn"]["id"] != initial.turn.id
++                })
++        }),
++    )
++    .await??;
++    let parent_wake: TurnStartedNotification =
++        serde_json::from_value(parent_wake.params.expect("parent wake params"))?;
++    timeout(
++        Duration::from_secs(5),
++        app.read_stream_until_matching_notification("parent wake completed", |notification| {
++            notification.method == "turn/completed"
++                && notification.params.as_ref().is_some_and(|params| {
++                    params["threadId"] == parent.id && params["turn"]["id"] == parent_wake.turn.id
++                })
++        }),
++    )
++    .await??;
++    assert_eq!(wake.requests().len(), 1);
++    Ok(())
++}
++
++#[tokio::test]
++async fn completed_child_during_parent_turn_does_not_start_another_turn() -> Result<()> {
++    let server = responses::start_mock_server().await;
++    responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(PARENT_PROMPT) && !body.contains(SPAWN_CALL_ID)
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-spawn"),
++            responses::ev_function_call_with_namespace(
++                SPAWN_CALL_ID,
++                "collaboration",
++                "spawn_agent",
++                &serde_json::to_string(&json!({
++                    "message": CHILD_PROMPT,
++                    "task_name": "worker",
++                    "fork_turns": "none",
++                }))?,
++            ),
++            responses::ev_completed("parent-spawn"),
++        ]),
++    )
++    .await;
++    responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains(SPAWN_CALL_ID) && !body.contains("Message Type: FINAL_ANSWER")
++        },
++        responses::sse_response(responses::sse(vec![
++            responses::ev_response_created("parent-busy"),
++            responses::ev_assistant_message("parent-message", "parent finished other work"),
++            responses::ev_completed("parent-busy"),
++        ]))
++        .set_delay(Duration::from_secs(2)),
++    )
++    .await;
++    responses::mount_response_once_match(
++        &server,
++        |request: &wiremock::Request| String::from_utf8_lossy(&request.body).contains(CHILD_PROMPT),
++        responses::sse_response(responses::sse(vec![
++            responses::ev_response_created("child-finished"),
++            responses::ev_assistant_message("child-message", "child done"),
++            responses::ev_completed("child-finished"),
++        ]))
++        .set_delay(Duration::from_millis(250)),
++    )
++    .await;
++    let completion_request = responses::mount_sse_once_match(
++        &server,
++        |request: &wiremock::Request| {
++            let body = String::from_utf8_lossy(&request.body);
++            body.contains("Message Type: FINAL_ANSWER") && body.contains("child done")
++        },
++        responses::sse(vec![
++            responses::ev_response_created("parent-read-completion"),
++            responses::ev_assistant_message("parent-read-message", "parent saw child"),
++            responses::ev_completed("parent-read-completion"),
++        ]),
++    )
++    .await;
++
++    let codex_home = TempDir::new()?;
++    MockResponsesConfig::new(&server.uri())
++        .with_extra_config(
++            "[features.multi_agent_v2]\nenabled = true\n[agents]\nwake_parent_on_completion = true",
++        )
++        .write(codex_home.path())?;
++    write_models_cache(codex_home.path()).await?;
++    let mut app = TestAppServer::builder()
++        .with_codex_home(codex_home.path())
++        .build_initialized()
++        .await?;
++    let parent = app.start_thread(ThreadStartParams::default()).await?.thread;
++    let TurnStartResponse { turn } = app
++        .request(|request_id| ClientRequest::TurnStart {
++            request_id,
++            params: TurnStartParams {
++                thread_id: parent.id.clone(),
++                input: vec![UserInput::Text {
++                    text: PARENT_PROMPT.to_string(),
++                    text_elements: Vec::new(),
++                }],
++                ..Default::default()
++            },
++        })
++        .await?;
++    timeout(
++        Duration::from_secs(10),
++        app.read_stream_until_matching_notification(
++            "child finished during parent turn",
++            |notification| {
++                notification.method == "turn/completed"
++                    && notification
++                        .params
++                        .as_ref()
++                        .is_some_and(|params| params["threadId"] != parent.id)
++            },
++        ),
++    )
++    .await??;
++    assert!(
++        timeout(
++            Duration::from_millis(100),
++            app.read_stream_until_matching_notification("parent still busy", |notification| {
++                notification.method == "turn/completed"
++                    && notification.params.as_ref().is_some_and(|params| {
++                        params["threadId"] == parent.id && params["turn"]["id"] == turn.id
++                    })
++            }),
++        )
++        .await
++        .is_err()
++    );
++    timeout(
++        Duration::from_secs(10),
++        app.read_stream_until_matching_notification("parent turn completed", |notification| {
++            notification.method == "turn/completed"
++                && notification.params.as_ref().is_some_and(|params| {
++                    params["threadId"] == parent.id && params["turn"]["id"] == turn.id
++                })
++        }),
++    )
++    .await??;
++    assert!(
++        timeout(
++            Duration::from_millis(400),
++            app.read_stream_until_matching_notification(
++                "unexpected extra parent turn",
++                |notification| {
++                    notification.method == "turn/started"
++                        && notification.params.as_ref().is_some_and(|params| {
++                            params["threadId"] == parent.id && params["turn"]["id"] != turn.id
++                        })
++                }
++            ),
++        )
++        .await
++        .is_err()
++    );
++    if completion_request.requests().is_empty() {
++        timeout(
++            Duration::from_secs(10),
++            app.start_turn_and_wait_for_completion(TurnStartParams {
++                thread_id: parent.id.clone(),
++                input: vec![UserInput::Text {
++                    text: NEXT_USER_PROMPT.to_string(),
++                    text_elements: Vec::new(),
++                }],
++                ..Default::default()
++            }),
++        )
++        .await??;
++    } else {
++        let request = completion_request.single_request();
++        assert_eq!(
++            request.body_json()["client_metadata"]["turn_id"],
++            json!(turn.id)
++        );
++    }
++    assert_eq!(completion_request.requests().len(), 1);
++    Ok(())
++}
+diff --git a/codex-rs/config/src/config_toml.rs b/codex-rs/config/src/config_toml.rs
+index 3369f46..d5cb566 100644
+--- a/codex-rs/config/src/config_toml.rs
++++ b/codex-rs/config/src/config_toml.rs
+@@ -727,6 +727,8 @@ pub struct AgentsToml {
+     /// Whether to record a model-visible message when an agent turn is interrupted.
+     /// Defaults to true.
+     pub interrupt_message: Option<bool>,
++    /// Whether a terminal child turn wakes an idle parent. Defaults to true.
++    pub wake_parent_on_completion: Option<bool>,
+ 
+     /// User-defined role declarations keyed by role name.
+     ///
+diff --git a/codex-rs/core/config.schema.json b/codex-rs/core/config.schema.json
+index f653c99..1542518 100644
+--- a/codex-rs/core/config.schema.json
++++ b/codex-rs/core/config.schema.json
+@@ -66,6 +66,10 @@
+           "description": "Maximum nesting depth for V1 agent threads. Ignored by V2.",
+           "format": "int32",
+           "type": "integer"
++        },
++        "wake_parent_on_completion": {
++          "description": "Whether a terminal child turn wakes an idle parent. Defaults to true.",
++          "type": "boolean"
+         }
+       },
+       "type": "object"
+diff --git a/codex-rs/core/src/agent/api.rs b/codex-rs/core/src/agent/api.rs
+index e2ef8de..6e6c772 100644
+--- a/codex-rs/core/src/agent/api.rs
++++ b/codex-rs/core/src/agent/api.rs
+@@ -225,6 +225,7 @@ pub struct AgentTurnOutcome {
+     pub parent_turn_id: Option<String>,
+     pub initiating_agent_path: Option<AgentPath>,
+     pub status: AgentStatus,
++    pub wake_parent_on_completion: bool,
+ }
+ 
+ /// Settings shared by the tree. A service tier of `None` restores the default tier.
+diff --git a/codex-rs/core/src/agent/control/completion.rs b/codex-rs/core/src/agent/control/completion.rs
+index 0f09257..5e43616 100644
+--- a/codex-rs/core/src/agent/control/completion.rs
++++ b/codex-rs/core/src/agent/control/completion.rs
+@@ -95,12 +95,23 @@ impl LocalAgentControl {
+         // `communication` owns the message. Keep a second copy only when the
+         // recorder will actually need it after parent delivery succeeds.
+         let trace_message = trace.is_enabled().then(|| message.clone());
++        let wake_idle_parent = if outcome.wake_parent_on_completion {
++            match self.runtime.upgrade() {
++                Ok(state) => match state.get_thread(parent_thread_id).await {
++                    Ok(parent) => parent.session.active_turn.lock().await.is_none(),
++                    Err(_) => false,
++                },
++                Err(_) => false,
++            }
++        } else {
++            false
++        };
+         let communication = InterAgentCommunication::new(
+             child_agent_path.clone(),
+             parent_agent_path,
+             Vec::new(),
+             message,
+-            /*trigger_turn*/ false,
++            /*trigger_turn*/ wake_idle_parent,
+         );
+         let context =
+             AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
+diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
+index f91a288..c8b7018 100644
+--- a/codex-rs/core/src/config/config_tests.rs
++++ b/codex-rs/core/src/config/config_tests.rs
+@@ -8614,6 +8614,7 @@ async fn load_config_rejects_missing_agent_role_config_file() -> std::io::Result
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9564,6 +9565,7 @@ async fn load_config_resolves_agent_controls() -> std::io::Result<()> {
+             default_subagent_model: Some("gpt-5.6-terra".to_string()),
+             default_subagent_reasoning_effort: Some(ReasoningEffort::High),
+             interrupt_message: Some(false),
++            wake_parent_on_completion: Some(false),
+             ..Default::default()
+         }),
+         ..Default::default()
+@@ -9583,6 +9585,7 @@ async fn load_config_resolves_agent_controls() -> std::io::Result<()> {
+             config.agent_default_subagent_model.as_deref(),
+             config.agent_default_subagent_reasoning_effort,
+             config.agent_interrupt_message_enabled,
++            config.agent_wake_parent_on_completion,
+         ),
+         (
+             false,
+@@ -9590,6 +9593,7 @@ async fn load_config_resolves_agent_controls() -> std::io::Result<()> {
+             Some("gpt-5.6-terra"),
+             Some(ReasoningEffort::High),
+             false,
++            false,
+         )
+     );
+ 
+@@ -9629,6 +9633,7 @@ async fn load_config_normalizes_agent_role_nickname_candidates() -> std::io::Res
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9675,6 +9680,7 @@ async fn load_config_rejects_empty_agent_role_nickname_candidates() -> std::io::
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9715,6 +9721,7 @@ async fn load_config_rejects_duplicate_agent_role_nickname_candidates() -> std::
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+@@ -9755,6 +9762,7 @@ async fn load_config_rejects_unsafe_agent_role_nickname_candidates() -> std::io:
+             default_subagent_reasoning_effort: None,
+             job_max_runtime_seconds: None,
+             interrupt_message: None,
++            wake_parent_on_completion: None,
+             roles: BTreeMap::from([(
+                 "researcher".to_string(),
+                 AgentRoleToml {
+diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
+index a782af1..7e6e67b 100644
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -924,6 +924,9 @@ pub struct Config {
+     /// Whether to record a model-visible message when an agent turn is interrupted.
+     pub agent_interrupt_message_enabled: bool,
+ 
++    /// Whether a terminal child turn wakes an idle parent.
++    pub agent_wake_parent_on_completion: bool,
++
+     /// Maximum nesting depth for V1 agent threads. Ignored by V2.
+     pub agent_max_depth: i32,
+ 
+@@ -3892,6 +3895,11 @@ impl Config {
+             .as_ref()
+             .and_then(|agents| agents.interrupt_message)
+             .unwrap_or(true);
++        let agent_wake_parent_on_completion = cfg
++            .agents
++            .as_ref()
++            .and_then(|agents| agents.wake_parent_on_completion)
++            .unwrap_or(true);
+         let background_terminal_max_timeout = cfg
+             .background_terminal_max_timeout
+             .unwrap_or(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS)
+@@ -4360,6 +4368,7 @@ impl Config {
+                 .transpose()?,
+             memories: memories_config,
+             agent_interrupt_message_enabled,
++            agent_wake_parent_on_completion,
+             codex_home,
+             sqlite: codex_state::SqliteConfig::from_sqlite_home(sqlite_home),
+             log_dir,
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 6d1580b..efbadfe 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -2418,7 +2418,7 @@ impl Session {
+                 status
+             }
+         };
+-        if !is_final(&status) {
++        if !is_final(&status) && !matches!(status, AgentStatus::Interrupted) {
+             return;
+         }
+ 
+@@ -2435,6 +2435,7 @@ impl Session {
+                         .initiating_agent_path()
+                         .cloned(),
+                     status,
++                    wake_parent_on_completion: turn_context.config.agent_wake_parent_on_completion,
+                 },
+                 &self.services.rollout_thread_trace,
+             )
+diff --git a/codex-rs/core/src/session_prefix.rs b/codex-rs/core/src/session_prefix.rs
+index 315ef1c..bbe2339 100644
+--- a/codex-rs/core/src/session_prefix.rs
++++ b/codex-rs/core/src/session_prefix.rs
+@@ -30,7 +30,8 @@ pub(crate) fn format_inter_agent_completion_message(
+         }
+         AgentStatus::Shutdown => "Agent shut down.".to_string(),
+         AgentStatus::NotFound => "Agent was not found.".to_string(),
+-        AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::Interrupted => return None,
++        AgentStatus::Interrupted => "Agent interrupted.".to_string(),
++        AgentStatus::PendingInit | AgentStatus::Running => return None,
+     };
+     Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
+ }
