@@ -78,11 +78,15 @@ requires_openai_auth = false
 `);
 }
 
-function subagentResponse(body) {
-  if (body.model === 'gpt-5.5' && !body.input?.some((item) => item.type === 'function_call_output')) {
+function subagentResponse(body, waitForChild = false) {
+  const toolOutputs = body.input?.filter((item) => item.type === 'function_call_output') ?? [];
+  if (body.model === 'gpt-5.5' && toolOutputs.length === 0) {
     return [{ id: 'spawn-1', type: 'function_call', namespace: 'collaboration', name: 'spawn_agent', call_id: 'spawn-call', arguments: JSON.stringify({
       task_name: 'worker', message: 'Reply briefly.', model: 'gpt-5.6-terra', fork_turns: 'none',
     }), status: 'completed' }];
+  }
+  if (body.model === 'gpt-5.5' && waitForChild && !toolOutputs.some((item) => item.call_id === 'wait-call')) {
+    return [{ id: 'wait-1', type: 'function_call', namespace: 'collaboration', name: 'wait_agent', call_id: 'wait-call', arguments: JSON.stringify({ timeout_ms: 15000 }), status: 'completed' }];
   }
   return [{ id: 'msg-1', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }];
 }
@@ -173,7 +177,9 @@ test('app-server sends a selected mapped model to its provider and rejects an ex
 test('CLI subagent requests use the parent provider and reject a cross-provider model without substitution', { timeout: 90_000 }, async () => {
   assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
   await fixture(async ({ home, cwd, requests, baseUrl, setResponder }) => {
-    setResponder(subagentResponse);
+    // Keep the root turn alive until the child's request/notification has run. A CLI root can
+    // otherwise finish and exit before its independently scheduled child sends HTTP.
+    setResponder((body) => subagentResponse(body, true));
     configureSubagentFixture(home, baseUrl, 'mock_route');
     const same = await exec(binary, home, cwd, ['exec', '--skip-git-repo-check', '--json', 'Spawn worker.']);
     assert.equal(same.code, 0, `${same.stdout}\n${same.stderr}`);
@@ -181,6 +187,7 @@ test('CLI subagent requests use the parent provider and reject a cross-provider 
 
     requests.length = 0;
     configureSubagentFixture(home, baseUrl, 'openai');
+    setResponder(subagentResponse);
     const cross = await exec(binary, home, cwd, ['exec', '--skip-git-repo-check', '--json', 'Spawn worker.']);
     assert.match(`${cross.stdout}\n${cross.stderr}`, /gpt-5\.6-terra.*openai.*mock_route/);
     assert.equal(requests.filter((request) => request.body?.model === 'gpt-5.6-terra').length, 0);
