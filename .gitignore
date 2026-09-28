@@ -16,3 +16,4 @@ node_modules/
 
 # Keep the hand-written example catalog
 !config/example-models.json
+!config/zai-models.json

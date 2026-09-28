@@ -28,6 +28,26 @@
 路由补丁，若要使用分叉语义须手动应用增量补丁并重新构建。以下安装步骤仍针对默认的
 **旧版 0.154.0** 补丁；新版尚未包含旧补丁的中转、子代理与桌面集成功能；子代理继承另票处理。
 
+### Z.AI Coding Plan / GLM-5.3-Flash（仅离线 mock）
+
+[#13](https://github.com/immorcoding/codex-multiprovider/issues/13) 在固定上游 SHA
+`064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` 上依次使用 0.158.0 路由、分叉、子代理
+补丁和 `patch/parent-completion.patch`。经本地 Responses mock 验证，直连无需新的引擎补丁，
+也不使用 DeepSeek 专属转换。将
+[`config/zai-coding-plan.config-snippet.toml`](config/zai-coding-plan.config-snippet.toml)
+并入隔离配置，用 `tools/merge-model-catalogs.mjs` 把
+[`config/zai-models.json`](config/zai-models.json) 与账户目录合并，设置 `model_catalog_json`。
+`ZAI_CODING_PLAN_API_KEY` 由进程环境安全注入，不写入仓库。Coding Plan 基址
+`https://api.z.ai/api/v1` 最终请求为 `/api/v1/responses`。目录仅展示 `low/high/max`，
+默认 `max`；绕过目录的原始 API/配置档位覆盖未被补丁验证，可能由上游拒绝。
+
+构建出的 CLI 设为 `CODEX_TEST_ROUTED_BINARY` 后运行
+`node --test tools/glm-responses.test.mjs`。它只用 127.0.0.1 mock、临时 `CODEX_HOME` 和假 key，
+覆盖路由、最终路径、思考档位、SSE 文本、工具 `call_id` 与结果续轮、第二轮、缺尾、
+400/401/403/429/503、取消和诊断脱敏；**没有**调用真实 Z.AI，因此不代表在线兼容通过。
+普通按量 API 是单独的服务身份，Flash 的 Responses 资格未验证；不能沿用 Coding Plan 的结论，
+也不能把 Chat Completions 的 `/api/paas/v4` 基址当作 Responses。旧 DeepSeek 中转仍只供其自身配置使用。
+
 | 选择器里选 | 该会话的供应商 |
 | --- | --- |
 | OpenAI 模型，如 `gpt-5.5` | OpenAI |

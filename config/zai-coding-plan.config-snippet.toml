@@ -1,0 +1,14 @@
+# Coding Plan service identity only. This does not establish ordinary pay-as-you-go API eligibility.
+# Merge config/zai-models.json with the account catalog and set model_catalog_json separately.
+# Keep the key outside this file; set ZAI_CODING_PLAN_API_KEY in the engine process environment.
+model = "glm-5.3-flash"
+
+[model_providers.zai_coding_plan]
+name = "Z.AI Coding Plan"
+base_url = "https://api.z.ai/api/v1"
+wire_api = "responses"
+env_key = "ZAI_CODING_PLAN_API_KEY"
+requires_openai_auth = false
+
+[model_provider_routes]
+"glm-5.3-flash" = "zai_coding_plan"

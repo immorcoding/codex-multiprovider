@@ -38,6 +38,29 @@ substituted. The setup below still describes
 the **legacy 0.154.0** default installer mode; these 0.158.0 patches do not include its proxy,
 or desktop integration additions.
 
+### Z.AI Coding Plan / GLM-5.3-Flash (offline mock only)
+
+For [#13](https://github.com/immorcoding/codex-multiprovider/issues/13), apply the three
+0.158.0 routing/fork/subagent patches above and `patch/parent-completion.patch`, in that order,
+to the fixed upstream SHA `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`. This service needs
+no new engine patch or DeepSeek compatibility proxy for the tested Responses contract. Copy
+[`config/zai-coding-plan.config-snippet.toml`](config/zai-coding-plan.config-snippet.toml) into
+your isolated config, merge [`config/zai-models.json`](config/zai-models.json) into your model
+catalog with `tools/merge-model-catalogs.mjs`, and set `model_catalog_json` to that merged file.
+Keep `ZAI_CODING_PLAN_API_KEY` outside the config and repository. The Coding Plan base URL is
+`https://api.z.ai/api/v1`, which the engine sends to `/api/v1/responses` (not `/responses`).
+The catalog advertises only `low`, `high`, `max`, defaulting to `max`; explicit raw API/config
+overrides outside the catalog are not validated by this patch and may be rejected upstream.
+
+With the built CLI at `CODEX_TEST_ROUTED_BINARY`, run `node --test tools/glm-responses.test.mjs`.
+It uses loopback mock HTTP, a disposable `CODEX_HOME`, and a fake key; it never calls Z.AI. It
+checks routing, path, effort, streaming text, tool `call_id` and result continuation, second turn,
+missing completion, 400/401/403/429/503, cancellation, and diagnostic secrecy. This is **not**
+online GLM compatibility approval. Ordinary pay-as-you-go API credentials are a separate service
+identity with unverified Flash Responses eligibility; do not reuse the Coding Plan result or
+substitute the `/api/paas/v4` Chat Completions base URL. The legacy DeepSeek proxy still applies
+only to its own configuration.
+
 | Picker choice | Provider of that session |
 | --- | --- |
 | OpenAI model, e.g. `gpt-5.5` | OpenAI |
