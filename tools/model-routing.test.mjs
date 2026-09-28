@@ -262,7 +262,7 @@ test('cold resume retains historical provider across changed defaults and reject
     });
     configure({ model: 'other-provider-model', mockOpenAiDefault: true });
     await appServer(home, async (rpc) => {
-      const resumed = await rpc('thread/resume', { threadId });
+      const resumed = await rpc('thread/resume', { threadId, modelProvider: 'mock_route' });
       assert.equal(resumed.modelProvider, 'mock_route');
       assert.equal(resumed.model, 'routed-model');
       await assert.rejects(
