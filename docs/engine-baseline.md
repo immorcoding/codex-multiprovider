@@ -1,6 +1,6 @@
 # Codex 开源引擎基线（2026-09-28）
 
-本项目移植补丁的目标是 GitHub 开源版，而非 Microsoft Store 安装的桌面端引擎。实施开始时复核的最新稳定 release 为 [`rust-v0.158.0`](https://github.com/openai/codex/releases/tag/rust-v0.158.0)，解引用到提交 `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`；CLI/workspace 版本为 `0.158.0`。安装脚本的 `-BaselineOnly` 构建未打补丁的原版引擎；`-RoutingPatch` 在相同干净基线上应用仅含 #8 模型路由的补丁。默认安装入口仍绑定旧补丁的旧 SHA，旧功能并未在新基线上整体迁移。
+本项目移植补丁的目标是 GitHub 开源版，而非 Microsoft Store 安装的桌面端引擎。实施开始时复核的最新稳定 release 为 [`rust-v0.158.0`](https://github.com/openai/codex/releases/tag/rust-v0.158.0)，解引用到提交 `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`；CLI/workspace 版本为 `0.158.0`。安装脚本的 `-BaselineOnly` 构建未打补丁的原版引擎；`-RoutingPatch` 在相同干净基线上应用 #8 模型路由与 #9 会话供应商绑定补丁。默认安装入口仍绑定旧补丁的旧 SHA，旧功能并未在新基线上整体迁移。
 
 | 对应组件 | 在此基线复核到的版本或约束 |
 | --- | --- |
@@ -9,7 +9,7 @@
 | Python SDK `openai-codex` | tag 中 `sdk/python/pyproject.toml` 为源码占位 `0.0.0-dev` |
 | Python runtime `openai-codex-cli-bin` | tag 中 SDK 依赖固定为 `0.153.4`，runtime 源码版本同为 `0.0.0-dev`；与引擎 `0.158.0` 尚未对齐，留给 Python SDK 适配票处理 |
 
-以上是 release/tag、包注册表和仓库源码的不同版本视角，不能把源码占位版本当作发布版本，也不能把 Python 的旧 runtime pin 当作已验证兼容的新引擎。基线票 #7 只验证 CLI 和 app-server initialize；#8 的独立补丁验证路由，不声称 GLM 请求或 SDK 行为已经适配。
+以上是 release/tag、包注册表和仓库源码的不同版本视角，不能把源码占位版本当作发布版本，也不能把 Python 的旧 runtime pin 当作已验证兼容的新引擎。基线票 #7 只验证 CLI 和 app-server initialize；#8/#9 的独立补丁验证路由与会话绑定，不声称 GLM 请求或 SDK 行为已经适配。
 
 在干净的 `rust-v0.158.0` checkout 上执行：
 
