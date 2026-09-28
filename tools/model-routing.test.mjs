@@ -107,24 +107,44 @@ async function appServer(home, run) {
   }
 }
 
-test('app-server routes a selected model and the configured default, but leaves other models on OpenAI', { timeout: 90_000 }, async () => {
+async function expectRequest(requests, url, model) {
+  const matches = (request) => request.url === url && request.body?.model === model;
+  const deadline = Date.now() + 15_000;
+  while (!requests.some(matches) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(requests.some(matches), JSON.stringify(requests));
+}
+
+test('app-server sends a selected mapped model to its provider and rejects an explicit conflict', { timeout: 90_000 }, async () => {
   assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
   await fixture(async ({ home, cwd, requests }) => appServer(home, async (rpc) => {
     const common = { cwd, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true };
     const selected = await rpc('thread/start', { ...common, model: 'routed-model' });
     assert.equal(selected.modelProvider, 'mock_route');
     await rpc('turn/start', { threadId: selected.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
-    const deadline = Date.now() + 15_000;
-    while (!requests.some((request) => request.url === '/v1/responses' && request.body.model === 'routed-model') && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    assert.ok(requests.some((request) => request.url === '/v1/responses' && request.body.model === 'routed-model'), JSON.stringify(requests));
-    const defaulted = await rpc('thread/start', common);
-    assert.equal(defaulted.modelProvider, 'mock_route');
-    const unmapped = await rpc('thread/start', { ...common, model: 'gpt-5.5' });
-    assert.equal(unmapped.modelProvider, 'openai');
+    await expectRequest(requests, '/v1/responses', 'routed-model');
     await assert.rejects(rpc('thread/start', { ...common, model: 'routed-model', modelProvider: 'openai' }), /routed-model.*mock_route.*openai/);
   }));
+});
+
+test('app-server sends the configured mapped model to its route and an unmapped model to the default provider', { timeout: 90_000 }, async () => {
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
+  await fixture(async ({ home, cwd, requests, configure }) => {
+    configure({ mockOpenAiDefault: true });
+    await appServer(home, async (rpc) => {
+      const common = { cwd, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true };
+      const defaulted = await rpc('thread/start', common);
+      assert.equal(defaulted.modelProvider, 'mock_route');
+      await rpc('turn/start', { threadId: defaulted.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+      await expectRequest(requests, '/v1/responses', 'routed-model');
+
+      const unmapped = await rpc('thread/start', { ...common, model: 'unmapped-model' });
+      assert.equal(unmapped.modelProvider, 'openai');
+      await rpc('turn/start', { threadId: unmapped.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+      await expectRequest(requests, '/v1/default/responses', 'unmapped-model');
+    });
+  });
 });
 
 test('codex exec sends the routed model to the configured mock provider', { timeout: 90_000 }, async () => {
