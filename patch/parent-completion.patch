@@ -603,7 +603,7 @@ index e2ef8de..6e6c772 100644
  
  /// Settings shared by the tree. A service tier of `None` restores the default tier.
 diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
-index 705d48c..b191e36 100644
+index 705d48c..f60de17 100644
 --- a/codex-rs/core/src/agent/control.rs
 +++ b/codex-rs/core/src/agent/control.rs
 @@ -175,6 +175,7 @@ impl LocalAgentControl {
@@ -646,6 +646,56 @@ index 705d48c..b191e36 100644
                          },
                          parent_turn_id,
                          root_turn_id,
+@@ -428,15 +433,15 @@ impl LocalAgentControl {
+         session_source: Option<SessionSource>,
+         child_reference: String,
+         child_agent_path: Option<AgentPath>,
+-    ) {
++    ) -> Option<tokio::task::JoinHandle<()>> {
+         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+             parent_thread_id, ..
+         })) = session_source
+         else {
+-            return;
++            return None;
+         };
+         let control = self.clone();
+-        tokio::spawn(async move {
++        Some(tokio::spawn(async move {
+             let status = match control.subscribe_status(child_thread_id).await {
+                 Ok(mut updates) => {
+                     let mut final_status = None;
+@@ -463,13 +468,14 @@ impl LocalAgentControl {
+                 return;
+             };
+             let child_thread = state.get_thread(child_thread_id).await.ok();
+-            let child_uses_multi_agent_v2 = match child_thread.as_ref() {
+-                Some(child_thread) => {
+-                    child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
+-                }
+-                None => true,
+-            };
+-            if child_agent_path.is_some() && child_uses_multi_agent_v2 {
++            // MultiAgentV2 forwards its own terminal turn event. A detached legacy
++            // watcher must never deliver that same result a second time.
++            if child_thread.as_ref().is_some_and(|child_thread| {
++                child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
++            }) {
++                return;
++            }
++            if child_agent_path.is_some() && child_thread.is_none() {
+                 let Some(child_agent_path) = child_agent_path.clone() else {
+                     return;
+                 };
+@@ -515,7 +521,7 @@ impl LocalAgentControl {
+                     status,
+                 ))
+                 .await;
+-        });
++        }))
+     }
+ 
+     fn prepare_agent_metadata(
 diff --git a/codex-rs/core/src/agent/control/completion.rs b/codex-rs/core/src/agent/control/completion.rs
 index 0f09257..42627d9 100644
 --- a/codex-rs/core/src/agent/control/completion.rs
@@ -840,7 +890,7 @@ index 6f2cc44..c20ded8 100644
  async fn interrupted_v2_agent_is_lost_after_residency_eviction() {
      let mut config = test_config().await;
 diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
-index 9b64298..a92bc46 100644
+index 9b64298..5ff5ec7 100644
 --- a/codex-rs/core/src/agent/control/spawn.rs
 +++ b/codex-rs/core/src/agent/control/spawn.rs
 @@ -582,10 +582,22 @@ impl LocalAgentControl {
@@ -877,11 +927,37 @@ index 9b64298..a92bc46 100644
                  )
                  .await?;
              }
+@@ -871,7 +884,7 @@ impl LocalAgentControl {
+                 .as_ref()
+                 .map(ToString::to_string)
+                 .unwrap_or_else(|| new_thread.thread_id.to_string());
+-            self.maybe_start_completion_watcher(
++            let _ = self.maybe_start_completion_watcher(
+                 new_thread.thread_id,
+                 notification_source,
+                 child_reference,
+@@ -1414,7 +1427,7 @@ impl LocalAgentControl {
+                 .as_ref()
+                 .map(ToString::to_string)
+                 .unwrap_or_else(|| resumed_thread.thread_id.to_string());
+-            self.maybe_start_completion_watcher(
++            let _ = self.maybe_start_completion_watcher(
+                 resumed_thread.thread_id,
+                 Some(notification_source.clone()),
+                 child_reference,
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
-index ceaeaa3..1b4f111 100644
+index ceaeaa3..fcb8df4 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
 +++ b/codex-rs/core/src/agent/control_tests.rs
-@@ -791,6 +791,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
+@@ -6,6 +6,7 @@ use crate::agent::agent_status_from_event;
+ use crate::agent::api::AgentControl;
+ use crate::agent::api::AgentInfo;
+ use crate::agent::api::AgentInput;
++use crate::agent::api::AgentTurnOutcome;
+ use crate::agent::api::SpawnRequest;
+ use crate::agent::next_thread_spawn_depth;
+ use crate::agent::types::AgentMessage;
+@@ -791,6 +792,7 @@ async fn send_inter_agent_communication_without_turn_queues_message_without_trig
          Op::InterAgentCommunication {
              communication: communication.clone(),
              start_options: Default::default(),
@@ -889,7 +965,7 @@ index ceaeaa3..1b4f111 100644
          },
      );
      let captured = harness
-@@ -1109,6 +1110,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
+@@ -1109,6 +1111,7 @@ async fn check_v2_agent_reload(route: V2ReloadRoute) {
          Op::InterAgentCommunication {
              communication,
              start_options: Default::default(),
@@ -897,14 +973,252 @@ index ceaeaa3..1b4f111 100644
          },
      );
      let captured = harness
-@@ -4204,6 +4206,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
-                 /*trigger_turn*/ false,
-             ),
-             start_options: Default::default(),
-+            wake_if_idle: false,
-         },
-     );
+@@ -4139,7 +4142,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
+ }
  
+ #[tokio::test]
+-async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
++async fn multi_agent_v2_detached_watcher_does_not_duplicate_terminal_delivery() {
+     let harness = AgentControlHarness::new().await;
+     let (_root_thread_id, root_thread) = harness.start_thread().await;
+     let (worker_thread_id, _worker_thread) = harness.start_thread().await;
+@@ -4158,18 +4161,21 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
+         .expect("tester thread should exist");
+     let worker_path = AgentPath::root().join("worker_a").expect("worker path");
+     let tester_path = worker_path.join("tester").expect("tester path");
+-    harness.control.maybe_start_completion_watcher(
+-        tester_thread_id,
+-        Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+-            parent_thread_id: worker_thread_id,
+-            depth: 2,
+-            agent_path: Some(tester_path.clone()),
+-            agent_nickname: None,
+-            agent_role: Some("explorer".to_string()),
+-        })),
+-        tester_path.to_string(),
+-        Some(tester_path.clone()),
+-    );
++    let watcher = harness
++        .control
++        .maybe_start_completion_watcher(
++            tester_thread_id,
++            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                parent_thread_id: worker_thread_id,
++                depth: 2,
++                agent_path: Some(tester_path.clone()),
++                agent_nickname: None,
++                agent_role: Some("explorer".to_string()),
++            })),
++            tester_path.to_string(),
++            Some(tester_path.clone()),
++        )
++        .expect("start legacy watcher for collision test");
+     let tester_turn = tester_thread.session.new_default_turn().await;
+     tester_thread
+         .session
+@@ -4187,41 +4193,56 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
+         )
+         .await;
+ 
++    // Race the legacy watcher against the V2 terminal callback for the same turn.
++    harness
++        .control
++        .notify_parent_of_terminal_turn(
++            AgentTurnOutcome {
++                thread_id: tester_thread_id,
++                turn_id: tester_turn.sub_id.clone(),
++                source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                    parent_thread_id: worker_thread_id,
++                    depth: 2,
++                    agent_path: Some(tester_path.clone()),
++                    agent_nickname: None,
++                    agent_role: None,
++                }),
++                parent_turn_id: None,
++                initiating_agent_path: None,
++                status: AgentStatus::Completed(Some("done".to_string())),
++                wake_parent_on_completion: true,
++            },
++            &tester_thread.session.services.rollout_thread_trace,
++        )
++        .await;
++
+     let expected_message = crate::session_prefix::format_inter_agent_completion_message(
+         worker_path.clone(),
+         tester_path.clone(),
+         &AgentStatus::Completed(Some("done".to_string())),
+     )
+     .expect("completed status should render");
+-    let expected = (
+-        worker_thread_id,
+-        Op::InterAgentCommunication {
+-            communication: InterAgentCommunication::new(
+-                tester_path.clone(),
+-                worker_path.clone(),
+-                Vec::new(),
+-                expected_message.clone(),
+-                /*trigger_turn*/ false,
+-            ),
+-            start_options: Default::default(),
+-        },
+-    );
+-
+-    timeout(Duration::from_secs(5), async {
+-        loop {
+-            let captured = harness
+-                .manager
+-                .captured_ops()
+-                .into_iter()
+-                .find(|entry| captured_op_matches(entry, &expected));
+-            if captured.is_some() {
+-                break;
++    timeout(Duration::from_secs(5), watcher)
++        .await
++        .expect("watcher should observe the terminal status")
++        .expect("watcher should exit normally");
++    let notifications = harness
++        .manager
++        .captured_ops()
++        .into_iter()
++        .filter_map(|(id, op)| match op {
++            Op::InterAgentCommunication { communication, .. }
++                if id == worker_thread_id
++                    && communication.author == tester_path
++                    && communication.recipient == worker_path =>
++            {
++                Some(communication)
+             }
+-            sleep(Duration::from_millis(10)).await;
+-        }
+-    })
+-    .await
+-    .expect("completion watcher should queue a direct-parent message");
++            _ => None,
++        })
++        .collect::<Vec<_>>();
++    assert_eq!(notifications.len(), 1);
++    assert_eq!(notifications[0].content, expected_message);
+ 
+     let root_history = root_thread.session.clone_history().await;
+     assert!(!history_contains_assistant_inter_agent_communication(
+@@ -4236,13 +4257,116 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
+     ));
+ }
+ 
++#[tokio::test]
++async fn multi_agent_v2_completion_queues_for_idle_parent_when_execution_is_full() {
++    let harness = AgentControlHarness::new().await;
++    let mut config = harness.config.clone();
++    let _ = config.features.enable(Feature::MultiAgentV2);
++    config.agent_wake_parent_on_completion = true;
++    let root = harness
++        .manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("start root");
++    let control = harness
++        .control
++        .clone()
++        .with_session_id(Default::default(), /*max_threads*/ 1);
++    let state = control.runtime.upgrade().expect("manager should be live");
++    let parent_path = AgentPath::try_from("/root/worker").expect("parent path");
++    let parent = Box::pin(state.spawn_new_thread_with_source(
++        config,
++        control.clone(),
++        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++            parent_thread_id: root.thread_id,
++            depth: 1,
++            agent_path: Some(parent_path.clone()),
++            agent_nickname: None,
++            agent_role: None,
++        }),
++        None,
++        Some(root.thread_id),
++        None,
++        Some(ThreadSource::Subagent),
++        None,
++        None,
++        None,
++        None,
++    ))
++    .await
++    .expect("start nested parent");
++    assert!(parent.thread.session.active_turn.lock().await.is_none());
++    let busy_source = SessionSource::SubAgent(SubAgentSource::Other("busy".to_string()));
++    let _capacity_guard = control
++        .execution_guard(MultiAgentVersion::V2, &busy_source)
++        .expect("occupy all non-root execution capacity");
++    let child_path = parent_path.join("child").expect("child path");
++    let child_id = ThreadId::new();
++    control
++        .notify_parent_of_terminal_turn(
++            AgentTurnOutcome {
++                thread_id: child_id,
++                turn_id: "child-terminal".to_string(),
++                source: SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
++                    parent_thread_id: parent.thread_id,
++                    depth: 2,
++                    agent_path: Some(child_path.clone()),
++                    agent_nickname: None,
++                    agent_role: None,
++                }),
++                parent_turn_id: None,
++                initiating_agent_path: None,
++                status: AgentStatus::Completed(Some("done".to_string())),
++                wake_parent_on_completion: true,
++            },
++            &parent.thread.session.services.rollout_thread_trace,
++        )
++        .await;
++
++    let notifications = harness
++        .manager
++        .captured_ops()
++        .into_iter()
++        .filter_map(|(id, op)| match op {
++            Op::InterAgentCommunication {
++                communication,
++                wake_if_idle,
++                ..
++            } if id == parent.thread_id && communication.author == child_path => {
++                Some((communication, wake_if_idle))
++            }
++            _ => None,
++        })
++        .collect::<Vec<_>>();
++    assert_eq!(notifications.len(), 1);
++    let (communication, wake_if_idle) = &notifications[0];
++    assert!(!communication.trigger_turn);
++    assert!(!wake_if_idle);
++    timeout(Duration::from_secs(5), async {
++        loop {
++            if parent
++                .thread
++                .session
++                .input_queue
++                .has_pending_mailbox_items()
++                .await
++            {
++                break;
++            }
++            sleep(Duration::from_millis(10)).await;
++        }
++    })
++    .await
++    .expect("full capacity must preserve the parent's queued result");
++}
++
+ #[tokio::test]
+ async fn completion_watcher_notifies_parent_when_child_is_missing() {
+     let harness = AgentControlHarness::new().await;
+     let (parent_thread_id, parent_thread) = harness.start_thread().await;
+     let child_thread_id = ThreadId::new();
+ 
+-    harness.control.maybe_start_completion_watcher(
++    let _ = harness.control.maybe_start_completion_watcher(
+         child_thread_id,
+         Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+             parent_thread_id,
 diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
 index f91a288..c8b7018 100644
 --- a/codex-rs/core/src/config/config_tests.rs
@@ -1118,7 +1432,7 @@ index ddaa1f1..e5a0d82 100644
          Op::Shutdown => Some(Op::Shutdown),
          _ => None,
 diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
-index 9c8268c..5dc068a 100644
+index 9c8268c..423d0bf 100644
 --- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 +++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
 @@ -2138,7 +2138,7 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
@@ -1130,7 +1444,15 @@ index 9c8268c..5dc068a 100644
      let (mut session, mut turn) = make_session_and_context().await;
      let manager = thread_manager();
      let root = manager
-@@ -2198,20 +2198,32 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
+@@ -2176,6 +2176,7 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
+         .await
+         .expect("worker thread should exist");
+ 
++
+     let aborted_turn = thread.session.new_default_turn().await;
+     thread
+         .session
+@@ -2198,20 +2199,32 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
              (id == root.thread_id)
                  .then_some(op)
                  .and_then(|op| match op {
