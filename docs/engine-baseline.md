@@ -7,7 +7,7 @@
 | npm CLI `@openai/codex` | 已发布 `0.158.0` |
 | npm TypeScript SDK `@openai/codex-sdk` | 已发布 `0.158.0`；tag 中 `sdk/typescript/package.json` 为源码占位 `0.0.0-dev` |
 | Python SDK `openai-codex` | tag 中 `sdk/python/pyproject.toml` 为源码占位 `0.0.0-dev` |
-| Python runtime `openai-codex-cli-bin` | tag 中 SDK 依赖固定为 `0.153.4`，runtime 源码版本同为 `0.0.0-dev`；与引擎 `0.158.0` 尚未对齐，留给 Python SDK 适配票处理 |
+| Python runtime `openai-codex-cli-bin` | tag 中 SDK 依赖固定为 `0.153.4`；#15 复核公开发布的 SDK `0.158.0` wheel 实际依赖 runtime `0.158.0`，版本已配对，但默认 runtime 不含本仓库补丁 |
 
 以上是 release/tag、包注册表和仓库源码的不同版本视角，不能把源码占位版本当作发布版本，也不能把 Python 的旧 runtime pin 当作已验证兼容的新引擎。基线票 #7 只验证 CLI 和 app-server initialize；#8/#9 的独立补丁验证路由与会话绑定，不声称 GLM 请求或 SDK 行为已经适配。
 
@@ -72,3 +72,12 @@ Responses 直连无需额外引擎或代理补丁：`config/zai-coding-plan.conf
 路径、文本与 SSE 完成、工具 `call_id` 及结果续轮、第二轮、缺尾、字段拒绝、
 401/403/429/503、取消和诊断脱敏。CI 在 Linux/Windows x64 构建并运行此测试。
 这只证明离线协议行为；Coding Plan 在线兼容及普通按量服务身份资格均未验证。
+
+## Python SDK 离线验收（#15）
+
+公开 PyPI `openai-codex==0.158.0` 通过 `CodexConfig(codex_bin=...)` 指向上述
+固定 SHA 的四补丁组合引擎。初始化、线程、轮次、实时 delta 通知、跨进程恢复、
+fork 继承供应商和错误路径均走真实 app-server；HTTP 供应商使用无真实密钥的本地 mock。
+未修改 SDK 源码。发布 wheel 的 runtime pin 已为 `0.158.0`，不能用 tag 中旧 pin
+推断发布包不兼容，也不能用版本相同推断默认 runtime 已含补丁。
+运行命令、独立类型检查及验收边界见 [Python SDK 测试说明](../tools/sdk/python/README.md)。
