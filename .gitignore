@@ -13,6 +13,9 @@ auth.json
 # Local scratch space
 work/
 node_modules/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
 
 # Keep the hand-written example catalog
 !config/example-models.json

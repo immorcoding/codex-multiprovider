@@ -65,3 +65,15 @@ jobs:
         run: |
           npm run typecheck --prefix tools/sdk
           npm test --prefix tools/sdk
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned published Python SDK
+        run: python -m pip install -r tools/sdk/python/requirements.txt
+      - name: Typecheck Python SDK calls and exercise patched app-server
+        timeout-minutes: 5
+        env:
+          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          python -m mypy --strict tools/sdk/python/public_api.py
+          python -m pytest -q tools/sdk/python
