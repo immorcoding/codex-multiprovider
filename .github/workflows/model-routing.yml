@@ -57,3 +57,11 @@ jobs:
         env:
           CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex${{ runner.os == 'Windows' && '.exe' || '' }}
         run: node --test tools/model-routing.test.mjs tools/glm-responses.test.mjs
+      - name: Install pinned published TypeScript SDK test dependencies
+        run: npm ci --prefix tools/sdk
+      - name: Typecheck public SDK calls and exercise patched CLI through SDK
+        env:
+          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: |
+          npm run typecheck --prefix tools/sdk
+          npm test --prefix tools/sdk

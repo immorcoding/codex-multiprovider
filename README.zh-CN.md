@@ -48,6 +48,24 @@
 普通按量 API 是单独的服务身份，Flash 的 Responses 资格未验证；不能沿用 Coding Plan 的结论，
 也不能把 Chat Completions 的 `/api/paas/v4` 基址当作 Responses。旧 DeepSeek 中转仍只供其自身配置使用。
 
+### TypeScript SDK 调用补丁 CLI（仅离线 mock）
+
+[#14](https://github.com/immorcoding/codex-multiprovider/issues/14) 使用公开的
+`@openai/codex-sdk@0.158.0`，通过 `codexPathOverride` 明确指向固定上游 SHA
+`064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` 加上述四份补丁构建的 CLI，
+不会误用 SDK 默认查找的 stock npm 平台包，也未修改 SDK 源码或已安装的 CLI。
+测试使用临时 `CODEX_HOME`、假 key 和本地 Responses mock：
+
+```powershell
+npm ci --prefix tools/sdk
+$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\patched\codex.exe'
+npm run typecheck --prefix tools/sdk
+npm test --prefix tools/sdk
+```
+
+测试经公开的 `startThread`、`runStreamed`、`resumeThread`、`run`、供应商错误和
+`AbortSignal` 取消路径确认 GLM 路由；不代表真实 Z.AI 在线兼容或凭据资格已验收。
+
 | 选择器里选 | 该会话的供应商 |
 | --- | --- |
 | OpenAI 模型，如 `gpt-5.5` | OpenAI |
