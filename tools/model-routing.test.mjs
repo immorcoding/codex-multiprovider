@@ -36,10 +36,14 @@ async function fixture(run) {
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const baseUrl = `http://127.0.0.1:${server.address().port}/v1`;
+  // Route tests do not exercise plugins; their background Git clone can outlive the CLI
+  // and race fixture cleanup under CODEX_HOME/.tmp.
   const configure = ({ provider = 'mock_route', sameProvider = 'mock_route', explicitProvider = '', model = 'routed-model', mockOpenAiDefault = false } = {}) => writeFileSync(path.join(home, 'config.toml'), `
 model = "${model}"
 ${explicitProvider ? `model_provider = "${explicitProvider}"` : ''}
 ${mockOpenAiDefault ? `openai_base_url = "${baseUrl}/default"` : ''}
+[features]
+plugins = false
 [model_providers.mock_route]
 name = "Mock route"
 base_url = "${baseUrl}"
@@ -67,6 +71,7 @@ function configureSubagentFixture(home, baseUrl, target) {
 model = "gpt-5.5"
 [features]
 multi_agent_v2 = true
+plugins = false
 [model_providers.mock_route]
 name = "Mock route"
 base_url = "${baseUrl}"

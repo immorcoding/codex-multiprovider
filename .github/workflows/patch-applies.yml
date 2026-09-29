@@ -96,3 +96,5 @@ jobs:
           git -C upstream apply "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/parent-completion.patch"
+          git -C upstream apply "$GITHUB_WORKSPACE/patch/parent-completion.patch"

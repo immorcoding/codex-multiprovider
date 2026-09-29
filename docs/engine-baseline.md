@@ -56,3 +56,19 @@ Microsoft Store 引擎。
 创建子线程前检查目标供应商是否等于父线程供应商；拒绝时报告模型、目标及父供应商。已有
 `-RoutingPatch` 安装入口仍只应用第一份补丁，因此需手动依序应用三份补丁并重新构建。
 `model-routing.yml` 在 Windows 和 Linux 上检查组合补丁、Rust 子代理 seam 和模拟供应商 CLI 行为。
+
+## Z.AI Coding Plan Responses 离线验收（#13）
+
+在固定 `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` 基线上，按顺序应用上面的
+`model-provider-routes-0.158.patch`、`fork-provider-binding-0.158.patch`、
+`subagent-provider-binding-0.158.patch` 和 `parent-completion.patch`。这张票的
+Responses 直连无需额外引擎或代理补丁：`config/zai-coding-plan.config-snippet.toml`
+将 `glm-5.3-flash` 约束到独立的 Coding Plan 服务身份，
+`config/zai-models.json` 仅在目录中暴露 `low/high/max`，默认 `max`。
+
+用构建的 patched `codex` 设置 `CODEX_TEST_ROUTED_BINARY`，运行
+`node --test tools/glm-responses.test.mjs`。测试用隔离的 `CODEX_HOME`、假凭据和
+127.0.0.1 HTTP mock，不接触真实 Z.AI 或用户引擎。覆盖最终 `/api/v1/responses`
+路径、文本与 SSE 完成、工具 `call_id` 及结果续轮、第二轮、缺尾、字段拒绝、
+401/403/429/503、取消和诊断脱敏。CI 在 Linux/Windows x64 构建并运行此测试。
+这只证明离线协议行为；Coding Plan 在线兼容及普通按量服务身份资格均未验证。
