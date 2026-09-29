@@ -226,7 +226,9 @@ test('GLM function call closes on the same call_id, then a second conversation t
       return stream('second-turn', [message('message-3', 'Second turn complete')]);
     });
     await appServer(home, async (rpc, notifications) => {
-      const start = await rpc('thread/start', { cwd, model: 'glm-5.3-flash', approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true });
+      // The mock only issues a fixed echo in a disposable cwd. Keep the real tool handler in
+      // the loop without making source-built Linux CI depend on a separate bwrap installation.
+      const start = await rpc('thread/start', { cwd, model: 'glm-5.3-flash', approvalPolicy: 'never', sandbox: 'danger-full-access', ephemeral: true });
       await rpc('turn/start', { threadId: start.thread.id, input: [{ type: 'text', text: 'Run the echo tool.', text_elements: [] }] });
       assert.equal((await completed(notifications)).params.turn.status, 'completed');
       assert.equal(requests.length, 2);
@@ -234,6 +236,7 @@ test('GLM function call closes on the same call_id, then a second conversation t
       const toolOutput = requests[1].body.input.find((item) => item.type === 'function_call_output' && item.call_id === 'glm-call-1');
       assert.ok(toolOutput, 'tool result must be sent with the model-issued call_id');
       assert.match(JSON.stringify(toolOutput.output), /GLM_TOOL_OK/);
+      assert.match(JSON.stringify(toolOutput.output), /Process exited with code 0/);
       await rpc('turn/start', { threadId: start.thread.id, input: [{ type: 'text', text: 'One more question.', text_elements: [] }] });
       assert.equal((await completed(notifications, 2)).params.turn.status, 'completed');
       assert.equal(requests.length, 3);
