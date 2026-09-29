@@ -47,7 +47,10 @@ async function fixture(run) {
   writeFileSync(modelsPath, readFileSync(fixtureModels));
   const config = readFileSync(fixtureConfig, 'utf8')
     .replace('https://api.z.ai/api/v1', baseUrl)
-    .replace('wire_api = "responses"', 'wire_api = "responses"\nrequest_max_retries = 0\nstream_max_retries = 0');
+    .replace('wire_api = "responses"', 'wire_api = "responses"\nrequest_max_retries = 0\nstream_max_retries = 0')
+    .replace('[model_providers.zai_coding_plan]', '[features]\nplugins = false\n[model_providers.zai_coding_plan]');
+  // These local HTTP fixtures do not exercise plugins. Keep the CLI from starting an
+  // independent curated-plugin clone that can outlive the process and race cleanup.
   writeFileSync(path.join(home, 'config.toml'), `model_catalog_json = ${JSON.stringify(modelsPath.replaceAll('\\', '\\\\'))}\n${config}`);
   try {
     await run({
