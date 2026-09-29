@@ -61,6 +61,25 @@ identity with unverified Flash Responses eligibility; do not reuse the Coding Pl
 substitute the `/api/paas/v4` Chat Completions base URL. The legacy DeepSeek proxy still applies
 only to its own configuration.
 
+### TypeScript SDK against the patched CLI (offline mock only)
+
+For [#14](https://github.com/immorcoding/codex-multiprovider/issues/14), use the public
+`@openai/codex-sdk@0.158.0` API with `codexPathOverride` set to the CLI built from fixed upstream
+SHA `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` plus the four patches above. This explicitly
+bypasses the SDK's stock npm CLI lookup; it does not replace or modify the installed SDK or CLI.
+The integration tests use an isolated `CODEX_HOME`, a fake key, and a loopback Responses mock:
+
+```powershell
+npm ci --prefix tools/sdk
+$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\patched\codex.exe'
+npm run typecheck --prefix tools/sdk
+npm test --prefix tools/sdk
+```
+
+They exercise public `startThread`, `runStreamed`, `resumeThread`, `run`, provider error, and
+`AbortSignal` cancellation, checking that the requests reach the GLM route. No SDK source change
+was needed. This is not an online Z.AI compatibility or credential-eligibility test.
+
 | Picker choice | Provider of that session |
 | --- | --- |
 | OpenAI model, e.g. `gpt-5.5` | OpenAI |
