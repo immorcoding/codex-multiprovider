@@ -23,8 +23,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -Ba
 0.159 路由/会话、分叉、子代理三份补丁已迁移。在干净冻结源码上使用
 `-BindingPatchesOnly -VerifyOnly -EnginePath E:\Projects\codex` 按序检查；省略 `-VerifyOnly`
 只应用、不编译。详见[迁移映射与源码交接](docs/binding-migration-0.159.md)。
-**diff/适用性完成，组合运行时待31。** 新版 `-CombinedPatch` 入口继续明确拒绝执行，等待
-[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) 迁移第四份补丁。
+第四补丁已迁移，`-CombinedPatch -VerifyOnly` 可检查四份组合；干净源码上省略 `-VerifyOnly`
+可应用并构建 debug CLI。本机共享源码已有补丁，不能重新安装。
+[#31](https://github.com/immorcoding/codex-multiprovider/issues/31) 的 Windows 组合 CLI、focused Rust
+与公开离线验收已通过，并修复关闭 wake 时下一用户轮次消费旧完成邮件的问题。
+复用前核对[修复后的源码/补丁/产物指纹及验收结果](docs/glm-responses-validation-0.159.md)。
 PR CI 只跑 Windows 轻量检查，重型 Rust 验证仅手动触发。详见[冻结基线与交接](docs/engine-baseline.md)。
 下文 0.158/0.154 的行为与安装说明均为各自固定 SHA 的历史证据，不代表 0.159 已兼容；
 SDK 测试依赖仍保留历史 0.158 pin，由 #32/#33 升级验证。
@@ -48,10 +51,11 @@ SDK 测试依赖仍保留历史 0.158 pin，由 #32/#33 升级验证。
 
 ### Z.AI Coding Plan / GLM-5.3-Flash（仅离线 mock）
 
-[#13](https://github.com/immorcoding/codex-multiprovider/issues/13) 在固定上游 SHA
-`064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` 上依次使用 0.158.0 路由、分叉、子代理
-补丁和 `patch/parent-completion.patch`。经本地 Responses mock 验证，直连无需新的引擎补丁，
-也不使用 DeepSeek 专属转换。将
+当前 0.159.2 CLI 在 `ff6aec96948b70d94983af2641a6b67c94faeff5` 上使用
+`config/binding-patches-0.159.json` 的有序四补丁；GLM Responses 离线直连通过，
+无需 GLM 适配或 DeepSeek 专属转换。详见[#31 验收与产物交接](docs/glm-responses-validation-0.159.md)。
+历史 [#13](https://github.com/immorcoding/codex-multiprovider/issues/13) 的证据只对应
+`064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` 上的 0.158 三补丁及 `patch/parent-completion.patch`。将
 [`config/zai-coding-plan.config-snippet.toml`](config/zai-coding-plan.config-snippet.toml)
 并入隔离配置，用 `tools/merge-model-catalogs.mjs` 把
 [`config/zai-models.json`](config/zai-models.json) 与账户目录合并，设置 `model_catalog_json`。

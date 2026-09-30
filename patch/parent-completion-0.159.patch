@@ -12,10 +12,10 @@ index 51f3e06b9a54249d83d2a3d1ebf6bdd5120e9cb4..698940d2c6daa1865a14da462dd7f90c
  mod plugin_install;
 diff --git a/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc6233732b5ecfeb
+index 0000000000000000000000000000000000000000..87df82290de597ede08a3c9cd2f331c2f4bf5c75
 --- /dev/null
 +++ b/codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs
-@@ -0,0 +1,585 @@
+@@ -0,0 +1,627 @@
 +//! Parent completion delivery is observable through the app-server turn stream.
 +
 +use anyhow::Result;
@@ -43,6 +43,28 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +const CHILD_PROMPT: &str = "finish the completion task";
 +const SPAWN_CALL_ID: &str = "completion-spawn";
 +const NEXT_USER_PROMPT: &str = "read the queued completion";
++
++// Count actual HTTP requests, rather than ResponseMock matcher attempts.
++async fn assert_completion_once(
++    server: &wiremock::MockServer,
++    payload: &str,
++) -> responses::ResponsesRequest {
++    let requests = responses::received_responses_requests(server).await;
++    let mut completions = requests
++        .into_iter()
++        .filter(|request| {
++            request.body_json()["input"]
++                .to_string()
++                .contains("Message Type: FINAL_ANSWER")
++        })
++        .collect::<Vec<_>>();
++    assert_eq!(completions.len(), 1);
++    let request = completions.remove(0);
++    let input = request.body_json()["input"].to_string();
++    assert_eq!(input.matches("Message Type: FINAL_ANSWER").count(), 1);
++    assert!(input.contains(payload));
++    request
++}
 +
 +#[test_case::test_case(true, false; "completed_wake")]
 +#[test_case::test_case(true, true; "errored_wake")]
@@ -106,7 +128,7 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +    } else {
 +        "child done"
 +    };
-+    let wake = responses::mount_sse_once_match(
++    let _wake = responses::mount_sse_once_match(
 +        &server,
 +        move |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -197,7 +219,7 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +            .await
 +            .is_err()
 +        );
-+        timeout(
++        let completed = timeout(
 +            Duration::from_secs(10),
 +            app.start_turn_and_wait_for_completion(TurnStartParams {
 +                thread_id: parent.id.clone(),
@@ -208,12 +230,11 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +                ..Default::default()
 +            }),
 +        )
-+        .await??
-+        .turn
-+        .id
++        .await??;
++        assert_eq!(completed.turn.status, TurnStatus::Completed);
++        completed.turn.id
 +    };
 +    assert_eq!(child.requests().len(), 1);
-+    assert_eq!(wake.requests().len(), 1);
 +    assert_eq!(parent_spawn.requests().len(), 1);
 +    assert_eq!(parent_finished.requests().len(), 1);
 +    assert!(
@@ -234,13 +255,11 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +        .await
 +        .is_err()
 +    );
-+    let request = wake.single_request();
 +    assert_eq!(
-+        String::from_utf8_lossy(&serde_json::to_vec(&request.body_json())?)
-+            .matches("Message Type: FINAL_ANSWER")
-+            .count(),
-+        1
++        responses::received_responses_requests(&server).await.len(),
++        4
 +    );
++    assert_completion_once(&server, expected_payload).await;
 +    Ok(())
 +}
 +
@@ -295,7 +314,7 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +        .set_delay(Duration::from_secs(8)),
 +    )
 +    .await;
-+    let wake = responses::mount_sse_once_match(
++    let _wake = responses::mount_sse_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -394,16 +413,22 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +            .await
 +            .is_err()
 +        );
-+        app.start_turn_and_wait_for_completion(TurnStartParams {
-+            thread_id: parent.id.clone(),
-+            input: vec![UserInput::Text {
-+                text: NEXT_USER_PROMPT.to_string(),
-+                text_elements: Vec::new(),
-+            }],
-+            ..Default::default()
-+        })
-+        .await?;
-+        assert_eq!(wake.requests().len(), 1);
++        let completed = app
++            .start_turn_and_wait_for_completion(TurnStartParams {
++                thread_id: parent.id.clone(),
++                input: vec![UserInput::Text {
++                    text: NEXT_USER_PROMPT.to_string(),
++                    text_elements: Vec::new(),
++                }],
++                ..Default::default()
++            })
++            .await?;
++        assert_eq!(completed.turn.status, TurnStatus::Completed);
++        assert_eq!(
++            responses::received_responses_requests(&server).await.len(),
++            4
++        );
++        assert_completion_once(&server, "Agent interrupted.").await;
 +        return Ok(());
 +    }
 +    let parent_wake = timeout(
@@ -418,7 +443,7 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +    .await??;
 +    let parent_wake: TurnStartedNotification =
 +        serde_json::from_value(parent_wake.params.expect("parent wake params"))?;
-+    timeout(
++    let finished = timeout(
 +        Duration::from_secs(5),
 +        app.read_stream_until_matching_notification("parent wake completed", |notification| {
 +            notification.method == "turn/completed"
@@ -428,7 +453,14 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +        }),
 +    )
 +    .await??;
-+    assert_eq!(wake.requests().len(), 1);
++    let finished: TurnCompletedNotification =
++        serde_json::from_value(finished.params.expect("parent completion params"))?;
++    assert_eq!(finished.turn.status, TurnStatus::Completed);
++    assert_eq!(
++        responses::received_responses_requests(&server).await.len(),
++        4
++    );
++    assert_completion_once(&server, "Agent interrupted.").await;
 +    assert_eq!(parent_spawn.requests().len(), 1);
 +    assert_eq!(parent_finished.requests().len(), 1);
 +    Ok(())
@@ -484,7 +516,7 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +        .set_delay(Duration::from_millis(250)),
 +    )
 +    .await;
-+    let completion_request = responses::mount_sse_once_match(
++    let _completion_request = responses::mount_sse_once_match(
 +        &server,
 +        |request: &wiremock::Request| {
 +            let body = String::from_utf8_lossy(&request.body);
@@ -576,8 +608,19 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +        .await
 +        .is_err()
 +    );
-+    if completion_request.requests().is_empty() {
-+        timeout(
++    let requests = responses::received_responses_requests(&server).await;
++    let consumed = requests.iter().find(|request| {
++        request.body_json()["input"]
++            .to_string()
++            .contains("Message Type: FINAL_ANSWER")
++    });
++    if let Some(request) = consumed {
++        assert_eq!(
++            request.body_json()["client_metadata"]["turn_id"],
++            json!(turn.id)
++        );
++    } else {
++        let completed = timeout(
 +            Duration::from_secs(10),
 +            app.start_turn_and_wait_for_completion(TurnStartParams {
 +                thread_id: parent.id.clone(),
@@ -589,14 +632,13 @@ index 0000000000000000000000000000000000000000..7d457f578d72a0282335a840fc623373
 +            }),
 +        )
 +        .await??;
-+    } else {
-+        let request = completion_request.single_request();
-+        assert_eq!(
-+            request.body_json()["client_metadata"]["turn_id"],
-+            json!(turn.id)
-+        );
++        assert_eq!(completed.turn.status, TurnStatus::Completed);
 +    }
-+    assert_eq!(completion_request.requests().len(), 1);
++    assert_eq!(
++        responses::received_responses_requests(&server).await.len(),
++        4
++    );
++    assert_completion_once(&server, "child done").await;
 +    assert_eq!(parent_spawn.requests().len(), 1);
 +    assert_eq!(parent_finished.requests().len(), 1);
 +    Ok(())
@@ -1697,10 +1739,33 @@ index 315ef1cabfb12c76f6ed5ae14f7f250015befa91..bbe2339c0692b98b9854c8ceba4ee160
      Some(InterAgentCompletionMessage::new(task_name, sender, payload).render())
  }
 diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
-index 323c8015a5a947845a24e643b4937ebdaf09b31e..35f23c5cc6da375e1568aa9d591479caae779e7f 100644
+index 323c8015a5a947845a24e643b4937ebdaf09b31e..310fcbd47df3dea4a74a95b7d4f40038e78c113d 100644
 --- a/codex-rs/core/src/tasks/mod.rs
 +++ b/codex-rs/core/src/tasks/mod.rs
-@@ -454,7 +454,11 @@ impl Session {
+@@ -286,7 +286,7 @@ impl Session {
+     pub(crate) async fn start_task<T: SessionTask>(
+         self: &Arc<Self>,
+         turn_context: Arc<TurnContext>,
+-        input: Vec<TurnInput>,
++        mut input: Vec<TurnInput>,
+         task: T,
+     ) {
+         self.activate_plugin_selection(&turn_context).await;
+@@ -311,7 +311,12 @@ impl Session {
+         let cancellation_token = CancellationToken::new();
+         let done = Arc::new(Notify::new());
+ 
+-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
++        let (mut pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
++        if task_kind == TaskKind::Regular {
++            // Already queued mail belongs to this turn's initial context. Mail
++            // arriving after task start keeps the normal next-turn deferral.
++            input.append(&mut pending_items);
++        }
+         let turn_state = {
+             let mut active = self.active_turn.lock().await;
+             self.record_started_turn(&turn_context.sub_id).await;
+@@ -454,7 +459,11 @@ impl Session {
      ) {
          if !self.input_queue.has_pending_mailbox_items().await
              || (!self.input_queue.has_trigger_turn_mailbox_items().await

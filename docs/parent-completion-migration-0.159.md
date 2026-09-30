@@ -1,5 +1,9 @@
 # 0.159 父代理完成通知迁移 / #30
 
+本文保留 #30 的迁移交接快照和当时的指纹。#31 已完成运行时复验并修复第四补丁，
+当前共享源码、第四补丁与 binary 以[最终验收交接](glm-responses-validation-0.159.md)为准；
+下方旧组合 tree 与第四补丁 SHA 不作为修复后的复用指纹。
+
 **diff/适用性完成，组合运行时待31。** Windows x64，仅复用 `E:\Projects\codex`，
 分支 `codex/multiprovider-0.159.2`，HEAD 保持 `ff6aec96948b70d94983af2641a6b67c94faeff5`。
 没有 Cargo check/build/test、CLI 行为套件、SDK 升级或真实 API 调用。

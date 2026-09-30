@@ -23,10 +23,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -Ba
 The three 0.159 routing/session, fork and subagent diffs are migrated. From clean frozen source,
 `-BindingPatchesOnly -VerifyOnly -EnginePath E:\Projects\codex` checks them in order; omit `-VerifyOnly`
 to apply without compiling. See [the migration map and source handoff](docs/binding-migration-0.159.md).
-Diff/applicability is complete; combined runtime validation waits for #31.
+The combined 0.159.2 CLI now passes local Windows focused Rust and offline public acceptance.
 The fourth patch is migrated: `-CombinedPatch -VerifyOnly -EnginePath E:\Projects\codex` checks all
 four against frozen HEAD without changing the shared dirty source. On clean source, omit `-VerifyOnly`
 to apply and build one debug CLI. See [parent completion migration and #31 handoff](docs/parent-completion-migration-0.159.md).
+[#31](https://github.com/immorcoding/codex-multiprovider/issues/31) also fixes queued parent completion
+processing on the next user turn. Reuse the repaired CLI only after checking
+[the final source/patch/binary fingerprints and results](docs/glm-responses-validation-0.159.md).
 PR CI runs Windows lightweight checks;
 heavy Rust validation is manual only. See [the frozen baseline and handoff](docs/engine-baseline.md).
 All 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
@@ -61,10 +64,12 @@ or desktop integration additions.
 
 ### Z.AI Coding Plan / GLM-5.3-Flash (offline mock only)
 
-For [#13](https://github.com/immorcoding/codex-multiprovider/issues/13), apply the three
-0.158.0 routing/fork/subagent patches above and `patch/parent-completion.patch`, in that order,
-to the fixed upstream SHA `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`. This service needs
-no new engine patch or DeepSeek compatibility proxy for the tested Responses contract. Copy
+The current 0.159.2 CLI uses the four patches in `config/binding-patches-0.159.json` on
+`ff6aec96948b70d94983af2641a6b67c94faeff5`. Its GLM Responses contract passes offline without
+a GLM adapter or DeepSeek compatibility proxy; see [the #31 validation and artifact handoff](docs/glm-responses-validation-0.159.md).
+The earlier [#13](https://github.com/immorcoding/codex-multiprovider/issues/13) result belongs to
+the three 0.158.0 patches plus `patch/parent-completion.patch` on
+`064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`. Copy
 [`config/zai-coding-plan.config-snippet.toml`](config/zai-coding-plan.config-snippet.toml) into
 your isolated config, merge [`config/zai-models.json`](config/zai-models.json) into your model
 catalog with `tools/merge-model-catalogs.mjs`, and set `model_catalog_json` to that merged file.

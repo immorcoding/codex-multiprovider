@@ -35,7 +35,7 @@ stock CLI。错误 SHA、Git 读取失败或脏源码均拒绝，不自动切换
 稳定基线模式要求显式 `-EnginePath`，不接受 `-WorkDir` 或另建引擎。省略 `-VerifyOnly`
 仍是显式 stock 构建入口，但本轮不执行，最终启动和 initialize 使用后续唯一组合产物验收。
 
-## 新版组合安装与尚未完成的验证
+## 新版组合安装与验收交接
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -CombinedPatch -EnginePath E:\Projects\codex -Profile debug
@@ -49,8 +49,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -Co
 新版三补丁轻量 CI，见[迁移映射与源码交接](binding-migration-0.159.md)。
 #30 已迁移父代理完成通知与唤醒并接通四补丁组合。它们的关闭仅表示补丁生成、按序适用性和差异审查完成。
 
-#31 将四份补丁按序应用到冻结 SHA，复用 E 盘唯一 Cargo target，增量构建一次 debug CLI，
-执行 focused Rust 与 GLM 离线工具闭环；#32/#33 复用该 binary 测双 SDK；#16 集中验收完整
+#31 复用已应用的四补丁与 E 盘唯一 Cargo target，首次构建组合 debug CLI，
+修复队列完成邮件在下一轮的消费并增量重建；focused Rust 与公开 GLM 离线矩阵通过，
+见[实际结果及最终指纹](glm-responses-validation-0.159.md)。#32/#33 复用该 binary 测双 SDK；#16 集中验收完整
 Windows 矩阵。不要逐票 cargo clean、release 构建或跑整个上游 Rust workspace。
 源码/补丁指纹变化时重新增量构建并重验受影响行为。
 
