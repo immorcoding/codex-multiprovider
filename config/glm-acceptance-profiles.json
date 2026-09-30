@@ -1,0 +1,20 @@
+{
+  "coding-plan": {
+    "issue": 17,
+    "provider": "zai_coding_plan",
+    "keyEnv": "ZAI_CODING_PLAN_API_KEY",
+    "baseUrl": "https://api.z.ai/api/v1",
+    "responsesHosts": ["api.z.ai"],
+    "responsesBasePaths": ["/api/v1"],
+    "qualificationRequired": false
+  },
+  "payg": {
+    "issue": 18,
+    "provider": "zai_payg",
+    "keyEnv": "ZAI_PAYG_API_KEY",
+    "baseUrl": null,
+    "responsesHosts": ["api.z.ai"],
+    "responsesBasePaths": ["/api/v1"],
+    "qualificationRequired": true
+  }
+}
