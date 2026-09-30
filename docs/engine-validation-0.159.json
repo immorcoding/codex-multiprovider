@@ -1,0 +1,137 @@
+{
+  "issue": 31,
+  "platform": "windows-x64",
+  "sourceRepositoryBaseCommit": "78a8b1e5e88f21a78d8126f0c631a5b2e2061016",
+  "enginePath": "E:/Projects/codex",
+  "engineBranch": "codex/multiprovider-0.159.2",
+  "sourceSha": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+  "patchTree": "1f419cca875711ec60c723b78eae465c8fa6a47c",
+  "buildSourceTree": "8657d695298d8affdb3bb7133dd2a90694a0ae12",
+  "verifiedPatchSourceBlobs": 42,
+  "patches": [
+    {
+      "path": "patch/model-provider-routes-0.159.patch",
+      "sha256": "d083daffc7f6efd33cfee28296dedafbb4902360af6e9242ea59ad89dafd27e8"
+    },
+    {
+      "path": "patch/fork-provider-binding-0.159.patch",
+      "sha256": "92341fd6a8fb85c35c4dc8320b4904998f3ff0dd040dc589cebb17d8431f36c0"
+    },
+    {
+      "path": "patch/subagent-provider-binding-0.159.patch",
+      "sha256": "c4b9bc2dbcf8e256ff036bab06897ae3d83566a9ece15f2f5e2668c0c543bc55"
+    },
+    {
+      "path": "patch/parent-completion-0.159.patch",
+      "sha256": "b138c131a34e3db554489130b6e4a5ab6e8bc815a368a941c825c79fdbfc5fa1"
+    }
+  ],
+  "cargoLockSha256": "e85460a5c2a1f92d73ca0a40219c846f6a10d729f3186667485372c3aa82cfbf",
+  "binaryPath": "E:/Projects/codex/codex-rs/target/debug/codex.exe",
+  "binarySha256": "23405b52983bfb275f50500ccea8821af0e9d5889197e3978f1300f45606bb41",
+  "binaryBytes": 345316352,
+  "version": "codex-cli 0.159.2",
+  "targetDirectory": "E:/Projects/codex/codex-rs/target",
+  "cargoProfile": "dev (tests inherit dev)",
+  "rust": "1.95.0",
+  "cargo": "1.95.0",
+  "just": "1.58.0",
+  "nextest": "0.9.146",
+  "node": "v24.21.0",
+  "buildCommand": "cargo build -p codex-cli --bin codex",
+  "initialBuildDuration": "7m 20s",
+  "engineSourceFixes": [
+    "codex-rs/core/src/tasks/mod.rs: queue claimed before a regular task enters initial context",
+    "codex-rs/app-server/tests/suite/v2/parent_completion_wake.rs: assert once against actual HTTP input and parent status"
+  ],
+  "tests": {
+    "core": {
+      "passed": 51,
+      "failed": 0,
+      "filteredOut": 2496,
+      "retried": 0,
+      "buildDuration": "1m 45s",
+      "runDurationSeconds": 29.774,
+      "nextestRunId": "71e3cbc4-89cf-4a4c-a477-44d168669a6d"
+    },
+    "appServer": {
+      "passed": 7,
+      "failed": 0,
+      "filteredOut": 1369,
+      "retried": 0,
+      "buildDuration": "36.28s",
+      "runDurationSeconds": 14.743,
+      "nextestRunId": "61688da4-e311-4e2b-adc9-2fb076363882"
+    },
+    "publicMocks": {
+      "initialize": 1,
+      "routing": 17,
+      "glmResponses": 11,
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0,
+      "runDurationSeconds": 64.94267
+    },
+    "initialAppServer": {
+      "passed": 5,
+      "failed": 2,
+      "failedCases": [
+        "completed_queued",
+        "errored_queued"
+      ],
+      "runDurationSeconds": 21.431,
+      "nextestRunId": "fc7fbd13-d0f5-44bb-8ff0-42f765878a32"
+    },
+    "lightweight": {
+      "passed": 18,
+      "failed": 0,
+      "skipped": 0,
+      "runDurationSeconds": 19.8203049
+    },
+    "affectedPatchChecks": {
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0,
+      "runDurationSeconds": 4.6955979
+    }
+  },
+  "serviceEvidence": {
+    "zaiCodingPlan": "offline-loopback-only",
+    "zaiPayAsYouGo": "unverified",
+    "realModelApiCalls": 0
+  },
+  "ci": {
+    "localHeavy": true,
+    "remoteHeavyDispatched": false,
+    "automaticPullRequest": "windows-lightweight-only"
+  },
+  "validationStatus": "passed",
+  "validationDate": "2026-09-30",
+  "initialPatchTree": "e5c4b382f88e631c7033260a1ea93609f15380b9",
+  "initialBinarySha256": "3e3e7a832deb060b55aa73de0f1578475f96a4de018b1682a349bf5618388415",
+  "incrementalBuildDuration": "1m 27s",
+  "initialize": {
+    "userAgent": "issue31-fingerprint/0.159.2 (Windows 10.0.22631; x86_64) unknown (issue31-fingerprint; 1)",
+    "platformFamily": "windows",
+    "platformOs": "windows",
+    "isolatedCodexHome": true
+  },
+  "windowsRustflags": [
+    "-C",
+    "link-arg=/STACK:8388608",
+    "-C",
+    "target-feature=+crt-static"
+  ],
+  "rustMinStack": 8388608,
+  "nextestProfile": "local",
+  "formatChecks": "rustfmt --edition 2024 on the two repaired Rust files; no formatting outside the authorized patch scope",
+  "patchRepositoryCommit": "eda93245a492eb7424984315e366f50bbc3d72c9",
+  "deliveryBranch": "codex/glm-responses-0.159",
+  "finalSourceVerification": {
+    "sourceBlobs": 42,
+    "normalCargoLockBlobs": 1,
+    "realIndexMatchesFrozenHead": true,
+    "freeDiskBytes": 145008635904,
+    "activeCargoOrRustcProcesses": 0
+  }
+}
