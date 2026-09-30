@@ -1,6 +1,7 @@
 # Keep the patch byte-exact. Git's line-ending conversion would rewrite it on checkout and make
 # `git apply` fail for consumers on Windows.
-*.patch -text
+# Empty unified-diff context lines are one space; check source whitespace during apply instead.
+*.patch -text whitespace=-blank-at-eol
 
 # Text files stay LF so the repository behaves the same on every platform.
 *.md   text eol=lf

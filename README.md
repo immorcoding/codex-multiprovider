@@ -24,8 +24,10 @@ The three 0.159 routing/session, fork and subagent diffs are migrated. From clea
 `-BindingPatchesOnly -VerifyOnly -EnginePath E:\Projects\codex` checks them in order; omit `-VerifyOnly`
 to apply without compiling. See [the migration map and source handoff](docs/binding-migration-0.159.md).
 Diff/applicability is complete; combined runtime validation waits for #31.
-The new `-CombinedPatch` entry stays blocked until
-[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) migrates the fourth patch. PR CI runs Windows lightweight checks;
+The fourth patch is migrated: `-CombinedPatch -VerifyOnly -EnginePath E:\Projects\codex` checks all
+four against frozen HEAD without changing the shared dirty source. On clean source, omit `-VerifyOnly`
+to apply and build one debug CLI. See [parent completion migration and #31 handoff](docs/parent-completion-migration-0.159.md).
+PR CI runs Windows lightweight checks;
 heavy Rust validation is manual only. See [the frozen baseline and handoff](docs/engine-baseline.md).
 All 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
 they do not establish 0.159 compatibility. The historical SDK test dependencies remain 0.158 until #32/#33.

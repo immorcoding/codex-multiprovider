@@ -12,12 +12,15 @@ if (!args.includes('--engine') || !value('--engine')) throw Error('--engine requ
 const engine = path.resolve(value('--engine'));
 const baseline = JSON.parse(readFileSync(path.join(repository, 'config/engine-baseline.json'), 'utf8'));
 const series = JSON.parse(readFileSync(args.includes('--series') ? value('--series') : path.join(repository, 'config/binding-patches-0.159.json'), 'utf8'));
-if (series.length !== 3) throw Error('Expected exactly three binding patches');
-const expectedOrder = ['model-provider-routes-0.159.patch', 'fork-provider-binding-0.159.patch', 'subagent-provider-binding-0.159.patch'];
+if (series.length !== 4) throw Error('Expected exactly four combined patches');
+const expectedOrder = ['model-provider-routes-0.159.patch', 'fork-provider-binding-0.159.patch', 'subagent-provider-binding-0.159.patch', 'parent-completion-0.159.patch'];
 if (series.some((file, index) => path.basename(file) !== expectedOrder[index])) {
-  throw Error('Binding patches must follow the routing/session, fork, subagent order');
+  throw Error('Patches must follow the routing/session, fork, subagent order, then parent completion');
 }
-const patches = series.map((file) => path.resolve(repository, file));
+const combined = args.includes('--combined');
+const parentOnly = args.includes('--parent-only');
+if (combined && parentOnly) throw Error('--combined cannot be combined with --parent-only');
+const patches = (parentOnly ? series.slice(3) : series.slice(0, combined ? 4 : 3)).map((file) => path.resolve(repository, file));
 const regenerate = args.includes('--regenerate');
 const apply = args.includes('--apply');
 if (apply && regenerate) throw Error('--apply cannot be combined with --regenerate');
@@ -37,7 +40,7 @@ try {
   let previous = baseline.sourceSha;
   const outputs = [];
   for (const patch of patches) {
-    git(['apply', '--cached', '--check', patch], env);
+    git(['apply', '--cached', '--check', '--whitespace=error', patch], env);
     git(['apply', '--cached', patch], env);
     const tree = git(['write-tree'], env).trim();
     outputs.push(git(['diff', '--full-index', '--binary', previous, tree], env));
@@ -51,7 +54,7 @@ try {
       git(['apply', patch]);
     }
   }
-  console.log(`3 binding patches verified at ${baseline.sourceSha}${apply ? ' and applied' : ' against HEAD (temporary index)'}`);
+  console.log(`${patches.length} ${parentOnly ? 'parent completion' : combined ? 'combined' : 'binding'} patches verified at ${baseline.sourceSha}${apply ? ' and applied' : ' against HEAD (temporary index)'}`);
   console.log(`Result tree: ${previous}`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-name: Historical 0.158 Windows model routing (manual heavy validation)
+name: 0.159 Windows combination (manual heavy validation)
 
 on:
   workflow_dispatch:
@@ -16,78 +16,47 @@ jobs:
     timeout-minutes: 90
     defaults:
       run:
-        shell: bash
-    env:
-      # Historical source only; #29/#30 will retarget after patch migration.
-      PIN_SHA: 064c6b8c737f5b41d171fdda80bd9ef10ad06eb3
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch clean stable engine
-        run: |
-          set -euo pipefail
-          git init upstream
-          git -C upstream remote add origin https://github.com/openai/codex.git
-          git -C upstream fetch --depth 1 origin "$PIN_SHA"
-          git -c core.autocrlf=false -C upstream checkout --detach FETCH_HEAD
-          test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
-          test -z "$(git -C upstream status --porcelain)"
-      - name: Apply routing, session, fork, subagent, and parent-completion patches
-        run: |
-          set -euo pipefail
-          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
-          git -C upstream apply "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
-          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
-          git -C upstream apply "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
-          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
-          git -C upstream apply "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
-          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/parent-completion.patch"
-          git -C upstream apply "$GITHUB_WORKSPACE/patch/parent-completion.patch"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Fetch the frozen source from shared metadata
+        run: |
+          $baseline = Get-Content -Raw config/engine-baseline.json | ConvertFrom-Json
+          git init upstream
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git -C upstream remote add origin https://github.com/openai/codex.git
+          if ($LASTEXITCODE -ne 0) { throw 'remote add failed' }
+          git -C upstream fetch --depth 1 origin $baseline.sourceSha
+          if ($LASTEXITCODE -ne 0) { throw 'fetch failed' }
+          git -c core.autocrlf=false -C upstream checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
+      - name: Preflight and apply the four 0.159 patches in shared order
+        run: |
+          node tools/binding-patches.mjs --engine (Join-Path $env:GITHUB_WORKSPACE 'upstream') --combined --apply
+          if ($LASTEXITCODE -ne 0) { throw 'combined patch application failed' }
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: upstream/codex-rs -> target
-          shared-key: historical-158-windows-debug
-      - name: Build and check the patched crates
-        working-directory: upstream/codex-rs
-        run: |
-          set -euo pipefail
-          cargo check -p codex-config -p codex-core -p codex-app-server -p codex-exec
-          cargo build -p codex-cli --bin codex
-      - name: Test subagent binding at the shared spawn seam
-        working-directory: upstream/codex-rs
-        env:
-          RUST_MIN_STACK: '16777216'
-        run: cargo test -p codex-core --lib spawn_agent_ -- --test-threads=1
-      - name: Test parent-completion delivery in the combined build
-        working-directory: upstream/codex-rs
-        env:
-          RUST_MIN_STACK: '16777216'
-        run: cargo test -p codex-app-server parent_completion_wake -- --test-threads=1
-      - name: Run mock-provider app-server and exec behavior tests
-        env:
-          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex.exe
-        run: node --test tools/model-routing.test.mjs tools/glm-responses.test.mjs
-      - name: Install pinned published TypeScript SDK test dependencies
-        run: npm ci --prefix tools/sdk
-      - name: Typecheck public SDK calls and exercise patched CLI through SDK
-        env:
-          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex.exe
-        run: |
-          set -euo pipefail
-          npm run typecheck --prefix tools/sdk
-          npm test --prefix tools/sdk
-      - uses: actions/setup-python@v5
+          shared-key: combination-159-windows-debug
+      - uses: taiki-e/install-action@v2
         with:
-          python-version: '3.12'
-      - name: Install pinned published Python SDK
-        run: python -m pip install -r tools/sdk/python/requirements.txt
-      - name: Typecheck Python SDK calls and exercise patched app-server
-        timeout-minutes: 5
+          tool: just,cargo-nextest
+      - name: Build the combined debug CLI once
+        working-directory: upstream/codex-rs
+        run: cargo build -p codex-cli --bin codex
+      - name: Focused core binding and parent delivery tests
+        working-directory: upstream
+        run: >-
+          just test -p codex-core --lib --test-threads=1
+          -E 'test(spawn_agent_) | test(multi_agent_v2_completion_) | test(multi_agent_v2_detached_) | test(multi_agent_v2_interrupted_) | test(completion_keeps_mail_queued_) | test(residency_keeps_nested_)'
+      - name: Parent completion through the public app-server seam
+        working-directory: upstream
+        run: just test -p codex-app-server --test all --test-threads=1 -E 'test(parent_completion_wake)'
+      - name: Public routing, initialize and GLM mock behavior
         env:
           CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex.exe
-        run: |
-          set -euo pipefail
-          python -m mypy --strict tools/sdk/python/public_api.py
-          python -m pytest -q tools/sdk/python
+        run: node --test tools/model-routing.test.mjs tools/engine-initialize.test.mjs tools/glm-responses.test.mjs
+      # Published SDK pins and their acceptance remain with #32/#33; reuse this CLI there.

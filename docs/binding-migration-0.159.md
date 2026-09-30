@@ -7,6 +7,8 @@
 ## 三份补丁与唯一源码交接
 
 统一顺序由 `config/binding-patches-0.159.json` 定义；安装、生成与 CI 使用同一份记录。
+#30 已在该记录追加第四份父代理补丁，当前唯一源码状态与四补丁指纹以
+[父代理迁移交接](parent-completion-migration-0.159.md)为准。下文三补丁 tree 与 dirty 清单是 #29 的交接快照。
 
 | 顺序 | 补丁 | SHA-256（文件字节） |
 | --- | --- | --- |
@@ -57,7 +59,7 @@ node tools/binding-patches.mjs --engine E:\Projects\codex --regenerate
 dirty 源码上可直接运行生成器的默认检查，它检查冻结 HEAD 上的补丁适用性，不证明当前 working tree 内容。
 历史 `sync-to-public.ps1` 仍服务旧整体补丁；新版三补丁使用此独立生成入口。
 
-`-CombinedPatch` 仍明确拒绝执行，等待 #30 第四份补丁、安装组合入口和 manual 重型 CI retarget。
+在 #29 交接时，`-CombinedPatch` 尚未接通；#30 已接通第四补丁与组合入口并 retarget manual CI。
 本票只在已有 Windows 0.159 轻量 job 接通三补丁检查/应用；历史 0.154/0.158 job 仍用旧固定 SHA，
 `model-routing.yml` 仍为手动触发的历史 0.158 重型验证，不视为新版组合通过。
 
