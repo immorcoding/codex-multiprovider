@@ -1,17 +1,42 @@
 """Published Python SDK against the fixed-SHA patched app-server, without real keys."""
 
+import hashlib
 import json
 import os
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.metadata import distribution, version
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
 from openai_codex import ApprovalMode, Codex, CodexConfig, CodexRpcError, Sandbox
 from openai_codex.types import TurnStatus
 
 ROOT = Path(__file__).resolve().parents[3]
 KEY = "python-sdk-fixture-key-must-not-leak"
+
+
+@pytest.fixture(scope="session")
+def verified_binary():
+    baseline = json.loads((ROOT / "config/engine-baseline.json").read_text())
+    evidence = json.loads((ROOT / "docs/engine-validation-0.159.json").read_text())
+    requirements = Path(__file__).with_name("requirements.txt").read_text().splitlines()
+    for package in ("openai-codex", "openai-codex-cli-bin"):
+        expected = baseline["publishedVersions"][package]
+        assert f"{package}=={expected}" in requirements, "Pin the frozen public SDK/runtime"
+        assert version(package) == expected, "Install the frozen public SDK/runtime"
+    runtime = next(Requirement(value) for value in distribution("openai-codex").requires
+                   if Requirement(value).name == "openai-codex-cli-bin")
+    assert str(runtime.specifier) == "==0.159.2"
+    binary = Path(os.environ["CODEX_TEST_ROUTED_BINARY"]).resolve(strict=True)
+    assert binary == Path(evidence["binaryPath"]).resolve(), "Reuse the single verified patched CLI"
+    with binary.open("rb") as file:
+        assert hashlib.file_digest(file, "sha256").hexdigest() == evidence["binarySha256"]
+    for patch in evidence["patches"]:
+        assert hashlib.sha256((ROOT / patch["path"]).read_bytes()).hexdigest() == patch["sha256"]
+    return binary
 
 
 def events(text):
@@ -28,8 +53,8 @@ def events(text):
 
 
 @pytest.fixture
-def provider(tmp_path):
-    binary = Path(os.environ["CODEX_TEST_ROUTED_BINARY"]).resolve(strict=True)
+def provider(tmp_path, monkeypatch, verified_binary):
+    binary = verified_binary
     requests = []
     release = threading.Event()
     state = {"status": 200, "hold": False}
@@ -60,6 +85,17 @@ def provider(tmp_path):
     home.mkdir()
     cwd = tmp_path / "cwd"
     cwd.mkdir()
+    # CodexConfig.env augments os.environ; isolate both before SDK launch.
+    env = {key: os.environ[key] for key in
+           ("SystemRoot", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC")
+           if key in os.environ}
+    env.update({key: str(home) for key in
+                ("USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA", "CODEX_HOME")})
+    env["ZAI_CODING_PLAN_API_KEY"] = KEY
+    for key in list(os.environ):
+        monkeypatch.delenv(key)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
     catalog = home / "models.json"
     catalog.write_bytes((ROOT / "config/zai-models.json").read_bytes())
     config = (ROOT / "config/zai-coding-plan.config-snippet.toml").read_text()
@@ -68,8 +104,11 @@ def provider(tmp_path):
     config = config.replace("[model_providers.zai_coding_plan]", "[features]\nplugins = false\n[model_providers.zai_coding_plan]")
     (home / "config.toml").write_text(f"model_catalog_json = {json.dumps(str(catalog))}\n{config}")
     sdk_config = CodexConfig(codex_bin=str(binary), cwd=str(cwd),
-                             env={"CODEX_HOME": str(home), "ZAI_CODING_PLAN_API_KEY": KEY})
+                             env=env)
     try:
+        result = subprocess.run([str(binary), "--version"], env=env, capture_output=True,
+                                text=True, check=True, timeout=10)
+        assert result.stdout.strip() == "codex-cli 0.159.2"
         yield sdk_config, requests, state, release
     finally:
         release.set()
@@ -94,7 +133,7 @@ def routed(requests, count):
 def test_initialize_stream_resume_and_fork(provider):
     config, requests, state, release = provider
     with Codex(config) as codex:
-        assert "0.158.0" in codex.metadata.userAgent
+        assert "0.159.2" in codex.metadata.userAgent
         thread = start(codex)
         thread_id = thread.id
         state["hold"] = True
@@ -111,7 +150,7 @@ def test_initialize_stream_resume_and_fork(provider):
             if event.method == "turn/completed":
                 assert event.payload.turn.status == TurnStatus.completed
         assert "item/agentMessage/delta" in methods
-        assert "turn/completed" in methods
+        assert methods.count("turn/completed") == 1
         state["hold"] = False
     # A fresh app-server proves persisted resume rather than an in-memory handle.
     with Codex(config) as codex:

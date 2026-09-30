@@ -30,7 +30,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -Ba
 复用前核对[修复后的源码/补丁/产物指纹及验收结果](docs/glm-responses-validation-0.159.md)。
 PR CI 只跑 Windows 轻量检查，重型 Rust 验证仅手动触发。详见[冻结基线与交接](docs/engine-baseline.md)。
 下文 0.158/0.154 的行为与安装说明均为各自固定 SHA 的历史证据，不代表 0.159 已兼容；
-TypeScript SDK 0.159.2 已在 #32 通过离线验收，Python SDK 测试依赖仍保留历史 0.158 pin，待 #33 验证。
+TypeScript SDK 0.159.2 已在 #32 通过离线验收，Python SDK/runtime 0.159.2 已在 #33 用同一补丁 CLI 通过同步离线验收。
 
 [#8](https://github.com/immorcoding/codex-multiprovider/issues/8) 与
 [#9](https://github.com/immorcoding/codex-multiprovider/issues/9) 的历史 **0.158.0 路由与会话绑定**补丁为
@@ -90,6 +90,29 @@ npm test --prefix tools/sdk
 测试经公开的 `startThread`、`runStreamed`、`resumeThread`、`run`、供应商错误和
 `AbortSignal` 取消路径确认 GLM 路由；详见[新版结果与准确指纹](docs/typescript-sdk-validation-0.159.md)。
 #14 的旧结论只对应 0.158.0。本票不代表真实 Z.AI 在线兼容或凭据资格已验收，普通按量身份和 #17/#18 仍未验证。
+
+### Python SDK 调用补丁 app-server（仅离线 mock）
+
+[#33](https://github.com/immorcoding/codex-multiprovider/issues/33) 安装公开发布的
+`openai-codex==0.159.2` 与 `openai-codex-cli-bin==0.159.2`，安装后的真实元数据确认这组依赖。
+冻结源码的 `0.0.0-dev` / `0.153.4` 不能当作发布 pin。
+下方必填 binary 变量经 `CodexConfig(codex_bin=...)` 显式选择 #31 的共享 CLI。
+测试拒绝错误的 SDK/runtime pin，以及与交接不一致的 binary/补丁指纹；
+随包的上游 runtime 不含本仓库补丁，不用于本票验收。
+
+```powershell
+uv pip install --python work/python-sdk/Scripts/python.exe --index-url https://pypi.org/simple --cache-dir work/uv-cache -r tools/sdk/python/requirements.txt
+$env:CODEX_TEST_ROUTED_BINARY = 'E:\Projects\codex\codex-rs\target\debug\codex.exe'
+work/python-sdk/Scripts/python.exe -m mypy --strict --cache-dir work/mypy-cache tools/sdk/python/public_api.py
+work/python-sdk/Scripts/python.exe -m pytest -q -p no:cacheprovider tools/sdk/python/test_routing.py
+```
+
+沿用已有 Python 环境。`CodexConfig.env` 会合并继承变量，因此 fixture 同时隔离进程环境和该选项；
+临时用户状态、假 Coding Plan key 与 `127.0.0.1` Responses mock 覆盖 initialize、start/turn/stream、
+类型化通知、新 app-server 中的持久 resume、fork、供应商 401 和 RPC 拒绝。
+父进程注入假 key、不可用代理及错误 CODEX_HOME 时，两项测试仍通过。
+没有修改 SDK 或引擎源码；详见[Python 0.159.2 结果与指纹](docs/python-sdk-validation-0.159.md)。
+异步对等、Python 路径的父/子代理策略、真实服务及 #17/#18 仍未验证；普通按量身份不继承离线 Coding Plan 的证据。
 
 | 选择器里选 | 该会话的供应商 |
 | --- | --- |

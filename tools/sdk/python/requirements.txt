@@ -1,3 +1,4 @@
-openai-codex==0.158.0
+openai-codex==0.159.2
+openai-codex-cli-bin==0.159.2
 pytest==9.1.1
 mypy==2.3.1
