@@ -32,8 +32,9 @@ processing on the next user turn. Reuse the repaired CLI only after checking
 [the final source/patch/binary fingerprints and results](docs/glm-responses-validation-0.159.md).
 PR CI runs Windows lightweight checks;
 heavy Rust validation is manual only. See [the frozen baseline and handoff](docs/engine-baseline.md).
-All 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
-they do not establish 0.159 compatibility. The historical SDK test dependencies remain 0.158 until #32/#33.
+The 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
+they do not establish 0.159 compatibility. TypeScript SDK 0.159.2 offline acceptance passes under #32;
+the Python SDK test dependency remains historical 0.158 pending #33.
 
 The **historical 0.158.0 routing and session-binding** patch for [#8](https://github.com/immorcoding/codex-multiprovider/issues/8)
 and [#9](https://github.com/immorcoding/codex-multiprovider/issues/9)
@@ -89,22 +90,26 @@ only to its own configuration.
 
 ### TypeScript SDK against the patched CLI (offline mock only)
 
-For [#14](https://github.com/immorcoding/codex-multiprovider/issues/14), use the public
-`@openai/codex-sdk@0.158.0` API with `codexPathOverride` set to the CLI built from fixed upstream
-SHA `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` plus the four patches above. This explicitly
-bypasses the SDK's stock npm CLI lookup; it does not replace or modify the installed SDK or CLI.
-The integration tests use an isolated `CODEX_HOME`, a fake key, and a loopback Responses mock:
+For [#32](https://github.com/immorcoding/codex-multiprovider/issues/32), use the public
+`@openai/codex-sdk@0.159.2` API with `codexPathOverride` set to the verified shared CLI built from
+`ff6aec96948b70d94983af2641a6b67c94faeff5` plus the four 0.159 patches. The test checks the installed
+SDK/lockfile version, binary path/SHA-256/version and patch SHA-256 values against the #31 handoff
+before a model turn. This bypasses the SDK's stock npm CLI lookup. The integration tests isolate
+`CODEX_HOME` and user state, use a fake key and loopback Responses mock, and exclude inherited API
+keys, proxy and Codex configuration variables:
 
 ```powershell
-npm ci --prefix tools/sdk
-$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\patched\codex.exe'
+npm ci --prefix tools/sdk --omit=optional --ignore-scripts --no-audit --no-fund
+$env:CODEX_TEST_ROUTED_BINARY = 'E:\Projects\codex\codex-rs\target\debug\codex.exe'
 npm run typecheck --prefix tools/sdk
 npm test --prefix tools/sdk
 ```
 
 They exercise public `startThread`, `runStreamed`, `resumeThread`, `run`, provider error, and
 `AbortSignal` cancellation, checking that the requests reach the GLM route. No SDK source change
-was needed. This is not an online Z.AI compatibility or credential-eligibility test.
+was needed. See [the new 0.159.2 results and exact fingerprints](docs/typescript-sdk-validation-0.159.md).
+The earlier #14 result belongs only to 0.158.0. This is not an online Z.AI compatibility or
+credential-eligibility test; ordinary pay-as-you-go identity and #17/#18 remain unverified.
 
 | Picker choice | Provider of that session |
 | --- | --- |

@@ -15,7 +15,8 @@
 上述注册表版本已在 #6 的 0.159 resolution 中核实。tag 中 CLI/workspace 的 `0.0.0`、SDK 的
 `0.0.0-dev` 等源码占位版本不代表发布版本；最终组合引擎应报告 `0.159.2`，由 #29/#30 迁移和
 #31/#16 构建验收验证。包版本一致也不能证明默认 runtime 含本仓库补丁。
-SDK 测试依赖目前仍保留历史 `0.158.0` pin；升级和公开 API 验收由 #32/#33 承接。
+TypeScript SDK 测试依赖已升级为公开 `0.159.2`，并在 #32 通过离线公开 API 验收，
+见[本机结果与指纹](typescript-sdk-validation-0.159.md)。Python SDK 测试依赖仍保留历史 `0.158.0` pin，待 #33 承接。
 tag 的 Python 源码依赖仍写 `openai-codex-cli-bin==0.153.4`，不能据此覆盖已核实的
 公开 wheel/runtime `0.159.2` 版本记录。
 
