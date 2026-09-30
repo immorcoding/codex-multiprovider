@@ -20,8 +20,12 @@ Reuse the existing `E:\Projects\codex` checkout and verify it without compiling:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
 ```
 
-The new `-CombinedPatch` entry is blocked until [#29](https://github.com/immorcoding/codex-multiprovider/issues/29)/
-[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) migrate the patches. PR CI runs Windows lightweight checks;
+The three 0.159 routing/session, fork and subagent diffs are migrated. From clean frozen source,
+`-BindingPatchesOnly -VerifyOnly -EnginePath E:\Projects\codex` checks them in order; omit `-VerifyOnly`
+to apply without compiling. See [the migration map and source handoff](docs/binding-migration-0.159.md).
+Diff/applicability is complete; combined runtime validation waits for #31.
+The new `-CombinedPatch` entry stays blocked until
+[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) migrates the fourth patch. PR CI runs Windows lightweight checks;
 heavy Rust validation is manual only. See [the frozen baseline and handoff](docs/engine-baseline.md).
 All 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
 they do not establish 0.159 compatibility. The historical SDK test dependencies remain 0.158 until #32/#33.

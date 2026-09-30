@@ -6,6 +6,8 @@
   -BaselineOnly -VerifyOnly checks the pinned SHA and clean state without Rust or patches.
   -BaselineOnly without -VerifyOnly builds stock upstream; it requires an existing -EnginePath.
   -CombinedPatch is reserved for 0.159.2 and rejects execution until #29/#30 finish migration.
+  -BindingPatchesOnly verifies/applies the three 0.159 binding diffs without compiling.
+  Add -VerifyOnly to leave working source unchanged (checks use a temporary Git index).
   -RoutingPatch is the historical 0.158 single routing patch mode. The default remains the
   historical 0.154 patch mode. Historical modes reject new source and may clone under -WorkDir.
   Existing checkouts are never switched or reset. No Microsoft Store client files are modified.
@@ -20,7 +22,9 @@
 .PARAMETER BaselineOnly
   Select frozen 0.159.2 source without any patches.
 .PARAMETER VerifyOnly
-  With -BaselineOnly, verify source and return before any Rust checks or build.
+  With -BaselineOnly or -BindingPatchesOnly, verify and return without a Rust build.
+.PARAMETER BindingPatchesOnly
+  Check/apply the three 0.159 binding patches in order; never builds a partial CLI.
 .PARAMETER RoutingPatch
   Historical 0.158 routing and session-binding patch (#8/#9), not the full combination.
 .PARAMETER CombinedPatch
@@ -36,6 +40,7 @@ param(
     [switch]$BaselineOnly,
     [switch]$RoutingPatch,
     [switch]$CombinedPatch,
+    [switch]$BindingPatchesOnly,
     [switch]$VerifyOnly
 )
 
@@ -47,19 +52,19 @@ Set-StrictMode -Version Latest
 $LegacyPatchSha = '1715e55076737158ba61d43158ede504de6d4ce1'
 $HistoricalRoutingSha = '064c6b8c737f5b41d171fdda80bd9ef10ad06eb3'
 $Baseline = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\config\engine-baseline.json') | ConvertFrom-Json
-if (@($BaselineOnly, $RoutingPatch, $CombinedPatch).Where({ $_ }).Count -gt 1) {
-    throw '-BaselineOnly, -RoutingPatch and -CombinedPatch cannot be combined.'
+if (@($BaselineOnly, $RoutingPatch, $CombinedPatch, $BindingPatchesOnly).Where({ $_ }).Count -gt 1) {
+    throw '-BaselineOnly, -RoutingPatch, -CombinedPatch and -BindingPatchesOnly cannot be combined.'
 }
 if ($CombinedPatch) {
     throw 'The 0.159.2 combined patches are not migrated yet (#29/#30). No old 0.158 or 0.154 patch will be applied. Use -BaselineOnly -VerifyOnly to verify the frozen source.'
 }
-if ($VerifyOnly -and -not $BaselineOnly) {
-    throw '-VerifyOnly requires -BaselineOnly.'
+if ($VerifyOnly -and -not ($BaselineOnly -or $BindingPatchesOnly)) {
+    throw '-VerifyOnly requires -BaselineOnly or -BindingPatchesOnly.'
 }
-if ($BaselineOnly -and (-not $EnginePath -or $WorkDir)) {
-    throw '-BaselineOnly requires -EnginePath to the existing checkout; it does not clone another engine or accept -WorkDir.'
+if (($BaselineOnly -or $BindingPatchesOnly) -and (-not $EnginePath -or $WorkDir)) {
+    throw 'Stable modes require -EnginePath to the existing checkout; they do not clone another engine or accept -WorkDir.'
 }
-$PinnedSha = if ($BaselineOnly) { $Baseline.sourceSha } elseif ($RoutingPatch) { $HistoricalRoutingSha } else { $LegacyPatchSha }
+$PinnedSha = if ($BaselineOnly -or $BindingPatchesOnly) { $Baseline.sourceSha } elseif ($RoutingPatch) { $HistoricalRoutingSha } else { $LegacyPatchSha }
 $UpstreamUrl = 'https://github.com/openai/codex.git'
 $PatchPath = if ($RoutingPatch) {
     Join-Path $PSScriptRoot '..\patch\model-provider-routes-0.158.patch'
@@ -103,11 +108,11 @@ function Invoke-Git {
 Write-Step 'Checking the tools this script cannot install for you'
 Test-Tool -Name 'git' -InstallHint 'Install Git from https://git-scm.com/download/win.'
 
-if (-not $BaselineOnly -and -not (Test-Path -LiteralPath $PatchPath)) {
+if (-not ($BaselineOnly -or $BindingPatchesOnly) -and -not (Test-Path -LiteralPath $PatchPath)) {
     throw "patch not found at $PatchPath. Run this script from inside the repository checkout."
 }
-if ($BaselineOnly) {
-    Write-Note "baseline-only: $PinnedSha (the provider patch will not be applied)"
+if ($BaselineOnly -or $BindingPatchesOnly) {
+    Write-Note "stable source: $PinnedSha"
 } else {
     Write-Note "patch: $((Resolve-Path -LiteralPath $PatchPath).Path)"
 }
@@ -146,6 +151,15 @@ Write-Ok 'the checkout is clean'
 
 if (-not (Test-Path -LiteralPath (Join-Path $EnginePath 'codex-rs\Cargo.toml'))) {
     throw "$EnginePath does not look like the Codex repository (codex-rs\Cargo.toml is missing)."
+}
+if ($BindingPatchesOnly) {
+    Test-Tool -Name 'node' -InstallHint 'Install Node.js 22 or newer.'
+    $bindingArguments = @((Join-Path $PSScriptRoot 'binding-patches.mjs'), '--engine', $EnginePath)
+    if (-not $VerifyOnly) { $bindingArguments += '--apply' }
+    & node @bindingArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Binding patch verification failed.' }
+    Write-Note 'Diff/applicability only. No Rust build; combined runtime validation waits for #31.'
+    return
 }
 if ($VerifyOnly) {
     Write-Ok "Verified without patching or compiling: $($Baseline.tag), $PinnedSha, $($Baseline.platform)."

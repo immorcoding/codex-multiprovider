@@ -20,8 +20,11 @@ runtime 的发布版本均为 `0.159.2`；源码占位版本不能当作发布�
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
 ```
 
-新版 `-CombinedPatch` 入口在 [#29](https://github.com/immorcoding/codex-multiprovider/issues/29)/
-[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) 迁移补丁前明确拒绝执行。
+0.159 路由/会话、分叉、子代理三份补丁已迁移。在干净冻结源码上使用
+`-BindingPatchesOnly -VerifyOnly -EnginePath E:\Projects\codex` 按序检查；省略 `-VerifyOnly`
+只应用、不编译。详见[迁移映射与源码交接](docs/binding-migration-0.159.md)。
+**diff/适用性完成，组合运行时待31。** 新版 `-CombinedPatch` 入口继续明确拒绝执行，等待
+[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) 迁移第四份补丁。
 PR CI 只跑 Windows 轻量检查，重型 Rust 验证仅手动触发。详见[冻结基线与交接](docs/engine-baseline.md)。
 下文 0.158/0.154 的行为与安装说明均为各自固定 SHA 的历史证据，不代表 0.159 已兼容；
 SDK 测试依赖仍保留历史 0.158 pin，由 #32/#33 升级验证。

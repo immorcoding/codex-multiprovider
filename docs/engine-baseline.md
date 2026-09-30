@@ -41,9 +41,10 @@ stock CLI。错误 SHA、Git 读取失败或脏源码均拒绝，不自动切换
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -CombinedPatch -EnginePath E:\Projects\codex -Profile debug
 ```
 
-这是为新版四补丁组合保留的明确入口，目前会报错说明 **0.159.2 补丁尚未迁移**，不会套用
-0.158/0.154 diff。#29 迁移路由、会话、分叉、子代理绑定；#30 迁移父代理完成通知与唤醒，
-随后接通此入口与新版稳定补丁 CI job。它们的关闭仅表示补丁生成、按序适用性和差异审查完成。
+这是为新版四补丁组合保留的明确入口，继续拒绝执行，不会套用 0.158/0.154 diff。
+#29 已迁移路由、会话、分叉、子代理绑定，新增 `-BindingPatchesOnly` 无构建入口及
+新版三补丁轻量 CI，见[迁移映射与源码交接](binding-migration-0.159.md)。
+#30 迁移父代理完成通知与唤醒后接通四补丁组合。它们的关闭仅表示补丁生成、按序适用性和差异审查完成。
 
 #31 将四份补丁按序应用到冻结 SHA，复用 E 盘唯一 Cargo target，增量构建一次 debug CLI，
 执行 focused Rust 与 GLM 离线工具闭环；#32/#33 复用该 binary 测双 SDK；#16 集中验收完整
@@ -59,11 +60,11 @@ CLI 版本与 stdio app-server initialize 的独立轻量运行入口保留在
 
 - PR 自动工作流 `patch-applies.yml` 只运行 Windows 轻量版本、安装脚本、语法和适用性检查，
   只触发 `pull_request`（另可手动触发），无 push/PR 重复运行，无 Linux runner。
-- 新版基线 job 验证 0.159.2 元数据和干净源码，不声称新版补丁适用性已通过。
+- 新版基线 job 验证 0.159.2 元数据、干净源码及三份绑定补丁的顺序预检/应用，不构建 Rust。
 - `historical-154-patch-applies` 与 `historical-158-binding-patches-apply` 明确检查旧 SHA。
   对旧固定 SHA 的适用性通过仅是历史回归，不能替代新版检查。
 - `model-routing.yml` 保留 Windows 重型构建和关键行为测试，仅 `workflow_dispatch`；
-  当前仍是明确标识的 0.158 历史验收，具有增量缓存及并发取消。#29/#30 再 retarget 到新版补丁。
+  当前仍是明确标识的 0.158 历史验收，具有增量缓存及并发取消。#30 再 retarget 到新版完整组合。
   本轮最终重型行为证据来自 #31/#16 的本机 Windows 验收，PR 自动 CI 不重复编译 Rust。
 
 0.158 的已完成票、补丁及报告保留，完整原始范围见

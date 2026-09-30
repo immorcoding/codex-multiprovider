@@ -1,0 +1,56 @@
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index 311418064962e3588333014842b5729ec01dafa4..677b380b66c463c3e7f5815dc363777fc2da1dda 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -5053,6 +5053,23 @@ impl ThreadRequestProcessor {
+             /*personality*/ None,
+         );
+         typesafe_overrides.ephemeral = ephemeral.then_some(true);
++        // A fork is a new thread, but its provider belongs to the source session.
++        // Restore its last model unless the caller selected another one explicitly.
++        if typesafe_overrides.model.is_none()
++            && !request_overrides
++                .as_ref()
++                .is_some_and(|overrides| overrides.contains_key("model"))
++        {
++            typesafe_overrides.model = source_thread.model.clone();
++        }
++        if typesafe_overrides.model_provider.is_none()
++            && !request_overrides
++                .as_ref()
++                .is_some_and(|overrides| overrides.contains_key("model_provider"))
++            && !source_thread.model_provider.is_empty()
++        {
++            typesafe_overrides.model_provider = Some(source_thread.model_provider.clone());
++        }
+         let restore_approval_policy = typesafe_overrides.approval_policy.is_none();
+         let restore_approvals_reviewer = typesafe_overrides.approvals_reviewer.is_none()
+             && !request_overrides
+@@ -5134,6 +5151,12 @@ impl ThreadRequestProcessor {
+             .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
+             .await
+             .map_err(|err| config_load_error(&err))?;
++        ensure_resumed_provider_binding(
++            &config,
++            (!source_thread.model_provider.is_empty())
++                .then_some(source_thread.model_provider.as_str()),
++            source_thread.model.as_deref(),
++        )?;
+         let goals_enabled = config.features.enabled(Feature::Goals);
+ 
+         let fallback_model_provider = config.model_provider_id.clone();
+diff --git a/codex-rs/exec/src/lib.rs b/codex-rs/exec/src/lib.rs
+index 3648c672edf79d1c19ab0580afbe5a8e679b2568..8450b6236d1a8290f5b3cd2febe11ecdccd0ff90 100644
+--- a/codex-rs/exec/src/lib.rs
++++ b/codex-rs/exec/src/lib.rs
+@@ -1067,8 +1067,8 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
+                 request_id: request_ids.next(),
+                 params: ThreadForkParams {
+                     thread_id: source_thread_id,
+-                    model: config.model.clone(),
+-                    model_provider: Some(config.model_provider_id.clone()),
++                    model: resume_model_selection.model,
++                    model_provider: resume_model_selection.provider,
+                     cwd: Some(config.cwd.to_string_lossy().to_string()),
+                     runtime_workspace_roots: Some(config.workspace_roots.clone()),
+                     approval_policy: Some(config.permissions.approval_policy.value().into()),
