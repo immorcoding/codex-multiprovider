@@ -3,19 +3,17 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import readline from 'node:readline';
 import path from 'node:path';
+import { childEnvironment } from './session.mjs';
 const [binary, home, provider, keyName, timeoutValue] = process.argv.slice(2);
 assert.ok(binary && home && provider && keyName && process.env[keyName], 'Missing arguments/key');
-const env = {};
-for (const k of ['SystemRoot','WINDIR','PATH','PATHEXT','TEMP','TMP','COMSPEC'])
-  if (process.env[k]) env[k] = process.env[k];
-for (const k of ['USERPROFILE','HOME','APPDATA','LOCALAPPDATA','CODEX_HOME']) env[k] = home;
-env[keyName] = process.env[keyName];
+const env = childEnvironment(home, keyName);
 const child = spawn(binary, ['app-server'], {cwd:path.join(home,'workspace'),env,windowsHide:true,stdio:['pipe','pipe','pipe']});
 child.stderr.resume(); // Never print provider bodies, credentials or reasoning.
 const pending = new Map();
 const called = new Set(), started = new Set(), completed = new Set();
 const marker = 'probe-' + randomBytes(8).toString('hex');
 let seq = 0, active = null, threadId;
+const finishedTurns = new Set();
 const send = m => child.stdin.write(JSON.stringify(m) + '\n');
 function fail() {
   for (const p of pending.values()) p.reject(new Error('RPC/transport failure'));
@@ -23,18 +21,12 @@ function fail() {
 }
 child.on('error', fail);
 child.on('exit', fail);
-readline.createInterface({input:child.stdout}).on('line', line => {
-  let m; try { m = JSON.parse(line); } catch { return; }
-  if (m.id != null && !m.method) {
-    const p = pending.get(m.id); if (!p) return;
-    pending.delete(m.id);
-    m.error ? p.reject(new Error('RPC_FAILED')) : p.resolve(m.result);
-    return;
-  }
+function handleTurnMessage(m) {
+  if (active && !active.turnId) { active.buffer.push(m); return; }
   if (m.id != null && m.method) {
     const p = m.params ?? {};
     if (m.method !== 'item/tool/call' || p.tool !== 'acceptance_echo' ||
-        p.threadId !== threadId || !p.callId || called.has(p.callId) || called.size >= 1) {
+        p.threadId !== threadId || p.turnId !== active?.turnId || !p.callId || called.has(p.callId) || called.size >= 1) {
       send({id:m.id,error:{code:-32601,message:'Unexpected/duplicate tool request'}});
       active?.reject(new Error('Unexpected/duplicate tool request')); return;
     }
@@ -44,6 +36,11 @@ readline.createInterface({input:child.stdout}).on('line', line => {
   }
   const p = m.params ?? {};
   if (!active || p.threadId !== threadId) return;
+  if (!['item/agentMessage/delta', 'item/started', 'item/completed', 'turn/completed'].includes(m.method)) return;
+  const observedTurn = m.method === 'turn/completed' ? p.turn?.id : p.turnId;
+  if (observedTurn !== active.turnId || finishedTurns.has(observedTurn)) {
+    active.reject(new Error('Wrong or stale turn')); return;
+  }
   if (m.method === 'item/agentMessage/delta') {
     active.delta += 1; active.text += p.delta ?? '';
   }
@@ -57,25 +54,47 @@ readline.createInterface({input:child.stdout}).on('line', line => {
   if (m.method === 'item/completed' && p.item?.type === 'agentMessage')
     active.text = p.item.text ?? active.text;
   if (m.method === 'turn/completed') {
+    finishedTurns.add(observedTurn);
+    active.completed += 1;
     if (p.turn?.status !== 'completed') active.reject(new Error('Turn not completed'));
     else active.resolve({text:active.text,delta:active.delta});
   }
+}
+readline.createInterface({input:child.stdout}).on('line', line => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.id != null && !m.method) {
+    const p = pending.get(m.id); if (!p) return;
+    pending.delete(m.id);
+    if (m.error) { p.reject(new Error('RPC_FAILED')); return; }
+    if (p.method === 'turn/start') {
+      if (!active || typeof m.result?.turn?.id !== 'string' || finishedTurns.has(m.result.turn.id)) {
+        p.reject(new Error('Missing/reused turn ID')); return;
+      }
+      active.turnId = m.result.turn.id;
+      for (const buffered of active.buffer.splice(0)) handleTurnMessage(buffered);
+    }
+    p.resolve(m.result);
+    return;
+  }
+  handleTurnMessage(m);
 });
 function rpc(method, params) {
   const id = ++seq;
-  return new Promise((resolve,reject) => {pending.set(id,{resolve,reject});send({id,method,params});});
+  return new Promise((resolve,reject) => {pending.set(id,{method,resolve,reject});send({id,method,params});});
 }
 async function turn(prompt) {
   let timer;
   const done = new Promise((resolve,reject) => {
-    active = {resolve,reject,text:'',delta:0};
+    active = {resolve,reject,text:'',delta:0,completed:0,buffer:[],turnId:null};
     timer = setTimeout(() => reject(new Error('120s timeout; stopped')),Number(timeoutValue ?? 120000));
   });
   // Attach a handler immediately, including failures while turn/start is pending.
   done.catch(() => {});
   try {
     await Promise.race([rpc('turn/start',{threadId,input:[{type:'text',text:prompt,textElements:[]}],effort:'low'}),done]);
-    return await done;
+    const result = await done;
+    assert.equal(active.completed, 1);
+    return result;
   } finally {clearTimeout(timer);active = null;}
 }
 const overall = setTimeout(() => {fail();child.kill();},Number(timeoutValue ?? 120000) * 2 + 10000);

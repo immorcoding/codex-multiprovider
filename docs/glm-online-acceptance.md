@@ -81,7 +81,9 @@ live 不指定 -Cases 时默认只跑 text-low，mock 默认全部。low 失败�
 stdout 为一份 JSON；报告保存在 work/glm-acceptance-<profile>-*/report.json（Git忽略）。
 退出码：0 = 选定项目通过；1 = 执行失败；2 = 参数/授权/资格/凭据/端点门槛拒绝。
 报告含 schemaVersion、服务身份/profile/issue、选定case、各项状态、HTTP状态/effort、
-发起请求数、remoteRequests、起止时间、产物指纹及报告路径。
+发起请求数、remoteRequests、起止时间、逐项耗时、未执行case、产物指纹及报告路径。
+工具case另外比较服务端SSE function_call的call_id与HTTP续请求的function_call_output.call_id，
+与app-server通知的callId证据分开记录（wireCallIdBound）。同线程通知必须属于当前turn/start返回的turn ID。
 
 mode=mock 永远 liveCompatibility=unverified，remoteRequests=0。
 一个 case 的 status=passed 不能说明整票在线通过；matrixComplete 区分是否选择并通过所有项目。
@@ -93,6 +95,7 @@ mode=mock 永远 liveCompatibility=unverified，remoteRequests=0。
 但不要整包上传 HOME：那里有引擎自行持久化的**合成**会话/数据库，不属于公开报告。
 
 只响应一次 acceptance_echo 动态工具，返回合成随机值；该工具不执行 shell。
+禁用验收工作目录上级AGENTS文档加载，避免真实仓库指令混入合成请求。
 read-only/never 不是“所有内置工具绝对不能运行”的保证；保持空 workspace，不挂载业务文件。
 不测图像、全部SDK API、Python AsyncCodex、父/子代理策略、Store、其他模型或其他身份。
 
@@ -114,6 +117,7 @@ work/python-sdk/Scripts/python.exe -m mypy --strict --cache-dir work/mypy-cache 
 - 隔离进程/有界中继在 session.mjs；唯一 mock边界在 mock-provider.mjs。
 - 协议、TS、Python适配器分别是 rpc-probe.mjs、typescript-probe.mjs、python-probe.py。
 - 增加项目先在公开 CLI/退出码/报告 seam 写失败测试，然后接入适配器/外部HTTP fixture。
+- rpc-fixture.cjs仅用于适配器错turn负例的外部JSON-RPC传输注入，不能代替真实CLI验收。
 - 改引擎/版本/model契约时先更新真实冻结证据与SDK pins，不加跳过指纹的捷径。
 
 完整冻结交付见 [Windows交付](windows-delivery-0.159.md)。

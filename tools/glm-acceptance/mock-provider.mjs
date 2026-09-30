@@ -33,12 +33,18 @@ export async function startMockProvider(scenario = 'success') {
     const lastUser = body.input?.filter(item => item.role === 'user').at(-1);
     const prompt = (lastUser?.content ?? []).map(item => item.text ?? '').join('');
     const marker = raw.match(/probe-[a-f0-9]{16}/)?.[0];
+    const outputs = body.input?.filter(item => item.type === 'function_call_output') ?? [];
+    if (outputs.some(item => item.call_id !== 'call-acceptance') ||
+        (marker && prompt.includes('Call acceptance_echo') && !outputs.some(item => JSON.stringify(item.output).includes(marker)))) {
+      response.end();
+      return;
+    }
     let events;
     if (prompt.includes('Call acceptance_echo') && !marker) {
       const item = { type: 'function_call', id: 'fn1', call_id: 'call-acceptance', name: 'acceptance_echo', arguments: '{}' };
       events = [
         { type: 'response.created', response: { id: 'tool-response', status: 'in_progress', output: [] } },
-        { type: 'response.output_item.added', item },
+        { type: 'response.output_item.added', item: scenario === 'inconsistent-call-id' ? { ...item, call_id: 'wrong-call' } : item },
         { type: 'response.output_item.done', item },
         { type: 'response.completed', response: { id: 'tool-response', status: 'completed', output: [item] } },
       ];

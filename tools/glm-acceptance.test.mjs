@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 const entry = 'tools/glm-acceptance/run.mjs';
 function run(...args) {
@@ -161,4 +163,24 @@ test('a passing selected-case report does not claim full live compatibility', ()
   assert.equal(result.report.remoteRequests, 0);
   assert.deepEqual(result.report.selectedCases, ['text-high']);
   assert.equal(result.report.observations[0].effort, 'high');
+});
+
+test('inconsistent service function call IDs fail before a tool continuation can be accepted', () => {
+  const result = run('--cases', 'tool-loop', '--mock-scenario', 'inconsistent-call-id');
+  assert.equal(result.status, 1);
+  assert.equal(result.report.errorCode, 'TOOL_BINDING_FAILED');
+  assert.equal(result.report.status, 'failed');
+});
+
+test('the RPC command rejects wrong-turn tool requests and stale same-thread completions', () => {
+  for (const scenario of ['wrong-tool-turn', 'wrong-completion']) {
+    const home = mkdtempSync(path.resolve('work/rpc-fault-'));
+    mkdirSync(path.join(home, 'workspace'));
+    copyFileSync('tools/glm-acceptance/rpc-fixture.cjs', path.join(home, 'workspace/app-server'));
+    writeFileSync(path.join(home, 'workspace/scenario.txt'), scenario);
+    const result = spawnSync(process.execPath, ['tools/glm-acceptance/rpc-probe.mjs', process.execPath, home, 'fixture', 'FIXTURE_KEY', '1000'],
+      { env: { ...process.env, FIXTURE_KEY: 'fixture-only' }, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout, /"pass":true/);
+  }
 });

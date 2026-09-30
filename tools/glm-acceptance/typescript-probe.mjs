@@ -2,14 +2,10 @@
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
 import {Codex} from '../sdk/node_modules/@openai/codex-sdk/dist/index.js';
+import { childEnvironment } from './session.mjs';
 const [binary,home,keyName,timeoutValue] = process.argv.slice(2);
 assert.ok(binary && home && keyName && process.env[keyName],'Missing arguments/key');
-/** @type {Record<string, string>} */
-const env={};
-for(const k of ['SystemRoot','WINDIR','PATH','PATHEXT','TEMP','TMP','COMSPEC'])
-  if(process.env[k])env[k]=process.env[k];
-for(const k of ['USERPROFILE','HOME','APPDATA','LOCALAPPDATA','CODEX_HOME'])env[k]=home;
-env[keyName]=process.env[keyName];
+const env=childEnvironment(home, keyName);
 const sdkVersion=JSON.parse(readFileSync(new URL('../sdk/node_modules/@openai/codex-sdk/package.json',import.meta.url),'utf8')).version;
 assert.equal(sdkVersion,'0.159.2');
 const codex=new Codex({codexPathOverride:binary,env});

@@ -26,7 +26,7 @@ export function parseOptions(args) {
     return Number(value);
   };
   const scenario = flags.get('--mock-scenario') ?? 'success';
-  if (!['success', 'secret-error', 'missing-completed', 'slow'].includes(scenario) || (mode === 'live' && flags.has('--mock-scenario')) ||
+  if (!['success', 'secret-error', 'missing-completed', 'slow', 'inconsistent-call-id'].includes(scenario) || (mode === 'live' && flags.has('--mock-scenario')) ||
       (mode === 'mock' && flags.has('--base-url'))) invalid();
   return { mode, profile, cases: selected, confirmLive: flags.has('--confirm-live'),
     qualified: flags.has('--responses-qualified'), maxRequests: integer('--max-requests', mode === 'mock' ? 12 : undefined, 50),

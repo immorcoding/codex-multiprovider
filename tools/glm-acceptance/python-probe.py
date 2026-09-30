@@ -23,12 +23,15 @@ try:
         deltas = 0
         completed = 0
         text = ""
-        for event in thread.turn("Remember token PY_ACCEPTANCE. Do not use tools. Reply only ACK_PY.", effort=ReasoningEffort.low).stream():
+        turn = thread.turn("Remember token PY_ACCEPTANCE. Do not use tools. Reply only ACK_PY.", effort=ReasoningEffort.low)
+        for event in turn.stream():
             if isinstance(event.payload, AgentMessageDeltaNotification):
+                assert event.payload.thread_id == thread_id and event.payload.turn_id == turn.id
                 assert completed == 0
                 deltas += 1
                 text += event.payload.delta
             if isinstance(event.payload, TurnCompletedNotification):
+                assert event.payload.thread_id == thread_id and event.payload.turn.id == turn.id
                 assert event.payload.turn.status == TurnStatus.completed
                 completed += 1
         assert deltas > 0 and completed == 1 and "ACK_PY" in text
