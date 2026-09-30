@@ -34,7 +34,7 @@ PR CI runs Windows lightweight checks;
 heavy Rust validation is manual only. See [the frozen baseline and handoff](docs/engine-baseline.md).
 The 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
 they do not establish 0.159 compatibility. TypeScript SDK 0.159.2 offline acceptance passes under #32;
-the Python SDK test dependency remains historical 0.158 pending #33.
+Python SDK/runtime 0.159.2 synchronous offline acceptance passes under #33 with the same patched CLI.
 
 The **historical 0.158.0 routing and session-binding** patch for [#8](https://github.com/immorcoding/codex-multiprovider/issues/8)
 and [#9](https://github.com/immorcoding/codex-multiprovider/issues/9)
@@ -110,6 +110,31 @@ They exercise public `startThread`, `runStreamed`, `resumeThread`, `run`, provid
 was needed. See [the new 0.159.2 results and exact fingerprints](docs/typescript-sdk-validation-0.159.md).
 The earlier #14 result belongs only to 0.158.0. This is not an online Z.AI compatibility or
 credential-eligibility test; ordinary pay-as-you-go identity and #17/#18 remain unverified.
+
+### Python SDK against the patched app-server (offline mock only)
+
+For [#33](https://github.com/immorcoding/codex-multiprovider/issues/33), install the public
+`openai-codex==0.159.2` and `openai-codex-cli-bin==0.159.2` releases. Their actual installed metadata
+confirms this runtime pairing; the frozen source's `0.0.0-dev` / `0.153.4` values are not release pins.
+Set `CodexConfig(codex_bin=...)` through the mandatory binary variable below. Tests reject an
+incorrect SDK/runtime pin or a binary/patch fingerprint that differs from the #31 handoff.
+The bundled upstream runtime contains no repository patches and is not used for this acceptance.
+
+```powershell
+uv pip install --python work/python-sdk/Scripts/python.exe --index-url https://pypi.org/simple --cache-dir work/uv-cache -r tools/sdk/python/requirements.txt
+$env:CODEX_TEST_ROUTED_BINARY = 'E:\Projects\codex\codex-rs\target\debug\codex.exe'
+work/python-sdk/Scripts/python.exe -m mypy --strict --cache-dir work/mypy-cache tools/sdk/python/public_api.py
+work/python-sdk/Scripts/python.exe -m pytest -q -p no:cacheprovider tools/sdk/python/test_routing.py
+```
+
+Reuse the existing Python environment. The tests isolate both the process environment and
+`CodexConfig.env`, because that option augments inherited variables. Disposable user state, a fake
+Coding Plan key and a `127.0.0.1` Responses mock cover initialize, start/turn/stream, typed
+notifications, persisted resume in a fresh app-server, fork, provider 401 and RPC rejection.
+Both tests pass even with fake keys, unusable proxies and an incorrect CODEX_HOME in the parent.
+No SDK or engine source change was needed. See [the Python 0.159.2 results and fingerprints](docs/python-sdk-validation-0.159.md).
+Async parity, parent/subagent policy through Python, real services and #17/#18 remain unverified;
+ordinary pay-as-you-go identity does not inherit this offline Coding Plan evidence.
 
 | Picker choice | Provider of that session |
 | --- | --- |
