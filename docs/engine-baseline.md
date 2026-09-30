@@ -16,7 +16,8 @@
 `0.0.0-dev` 等源码占位版本不代表发布版本；最终组合引擎应报告 `0.159.2`，由 #29/#30 迁移和
 #31/#16 构建验收验证。包版本一致也不能证明默认 runtime 含本仓库补丁。
 TypeScript SDK 测试依赖已升级为公开 `0.159.2`，并在 #32 通过离线公开 API 验收，
-见[本机结果与指纹](typescript-sdk-validation-0.159.md)。Python SDK 测试依赖仍保留历史 `0.158.0` pin，待 #33 承接。
+见[本机结果与指纹](typescript-sdk-validation-0.159.md)。Python SDK/runtime 也已升级为公开 `0.159.2`，
+同步 API 离线验收在 #33 通过，见[Python 结果](python-sdk-validation-0.159.md)。
 tag 的 Python 源码依赖仍写 `openai-codex-cli-bin==0.153.4`，不能据此覆盖已核实的
 公开 wheel/runtime `0.159.2` 版本记录。
 
@@ -39,10 +40,11 @@ stock CLI。错误 SHA、Git 读取失败或脏源码均拒绝，不自动切换
 ## 新版组合安装与验收交接
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -CombinedPatch -EnginePath E:\Projects\codex -Profile debug
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -EnginePath E:\Projects\codex
 ```
 
-此入口现在使用新版四补丁统一顺序，要求干净冻结源码，默认构建 debug CLI。
+默认入口现在使用新版四补丁统一顺序，要求现有干净冻结源码，默认构建 debug CLI。
+`-CombinedPatch` 是显式别名；不会克隆第二份引擎，target 固定为该 checkout 的 `codex-rs/target`。
 当前共享源码已有组合补丁，不能重新运行此安装；加 `-VerifyOnly` 可用临时 index 检查 HEAD 适用性，
 不会核验或更改 dirty 工作源码，也不会调用 Cargo。源码与 #31 构建交接见
 [父代理完成迁移](parent-completion-migration-0.159.md)。
@@ -53,7 +55,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -Co
 #31 复用已应用的四补丁与 E 盘唯一 Cargo target，首次构建组合 debug CLI，
 修复队列完成邮件在下一轮的消费并增量重建；focused Rust 与公开 GLM 离线矩阵通过，
 见[实际结果及最终指纹](glm-responses-validation-0.159.md)。#32/#33 复用该 binary 测双 SDK；#16 集中验收完整
-Windows 矩阵。不要逐票 cargo clean、release 构建或跑整个上游 Rust workspace。
+Windows 矩阵，入口与结果见[最终交付报告](windows-delivery-0.159.md)。不要逐票 cargo clean、release 构建或跑整个上游 Rust workspace。
 源码/补丁指纹变化时重新增量构建并重验受影响行为。
 
 CLI 版本与 stdio app-server initialize 的独立轻量运行入口保留在
@@ -65,6 +67,7 @@ CLI 版本与 stdio app-server initialize 的独立轻量运行入口保留在
 
 - PR 自动工作流 `patch-applies.yml` 只运行 Windows 轻量版本、安装脚本、语法和适用性检查，
   只触发 `pull_request`（另可手动触发），无 push/PR 重复运行，无 Linux runner。
+- 同一 job 安装公开 TypeScript SDK 0.159.2 并运行 `tsc --noEmit`；不安装 optional stock CLI 平台包或运行安装脚本。
 - 新版基线 job 验证 0.159.2 元数据、干净源码及四份补丁的独立/组合预检及组合应用，不构建 Rust。
 - `historical-154-patch-applies` 与 `historical-158-binding-patches-apply` 明确检查旧 SHA。
   对旧固定 SHA 的适用性通过仅是历史回归，不能替代新版检查。
@@ -76,6 +79,6 @@ CLI 版本与 stdio app-server initialize 的独立轻量运行入口保留在
 0.158 的已完成票、补丁及报告保留，完整原始范围见
 [0.158 历史基线与验收](engine-baseline-0.158.md)，仅对应
 `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`。
-`-RoutingPatch` 仍明确是历史 0.158 单路由补丁模式；不传稳定模式仍是历史 0.154 默认安装，
+`-RoutingPatch` 仍明确是历史 0.158 单路由补丁模式；历史 0.154 安装改为显式 `-LegacyPatch`，
 固定 `1715e55076737158ba61d43158ede504de6d4ce1`。它们都拒绝 0.159 checkout。
 本票不改变 Microsoft Store 桌面端或用户已有上游分支。

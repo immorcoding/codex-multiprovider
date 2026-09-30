@@ -1,6 +1,7 @@
 @echo off
-rem One-click wrapper: double-click to patch and build the engine.
-rem Extra arguments are passed through, e.g. install-engine.cmd -Profile debug
+rem Windows 0.159.2 four-patch debug installer; an existing frozen checkout is required.
+rem Example: install-engine.cmd -EnginePath E:\Projects\codex -VerifyOnly
+rem Historical 0.154 is explicit: -LegacyPatch. Extra arguments are passed through.
 setlocal
 chcp 65001 >nul
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-engine.ps1" %*

@@ -1,6 +1,6 @@
 # codex-multiprovider（非官方补丁）
 
-[![patch applies](https://github.com/2213778958/codex-multiprovider/actions/workflows/patch-applies.yml/badge.svg)](https://github.com/2213778958/codex-multiprovider/actions/workflows/patch-applies.yml)
+[![patch applies](https://github.com/immorcoding/codex-multiprovider/actions/workflows/patch-applies.yml/badge.svg)](https://github.com/immorcoding/codex-multiprovider/actions/workflows/patch-applies.yml)
 
 [English](README.md) | **中文**
 
@@ -8,29 +8,56 @@
 > `docs/contributing.md`："We do not accept external code contributions or pull requests"），
 > 因此这里以本地补丁形式分发，而非一个待合并的 PR。本文件是 [README.md](README.md) 的中文镜像。
 
-让 Codex 桌面端的选择器也能列出第二家供应商（默认 DeepSeek）的模型，并让每个会话固定在它启动时的
-供应商上。桌面客户端不做任何修改。
+为开源 Codex CLI 增加模型路由、会话/分叉/子代理供应商绑定，以及一次性父代理完成通知。
+下方交付覆盖 Windows x64 离线行为。
 
 当前交付基线为 **Windows x64、Codex 0.159.2**，tag `rust-v0.159.2`，源码 SHA
 `ff6aec96948b70d94983af2641a6b67c94faeff5`。CLI、TypeScript SDK、Python SDK 与 Python
-runtime 的发布版本均为 `0.159.2`；源码占位版本不能当作发布版本。复用已有 `E:\Projects\codex`，
-只验证源码、不编译：
+runtime 的发布版本均为 `0.159.2`；源码占位版本不能当作发布版本。
+**默认安装器与补丁生成器现在均选择 0.159 四补丁组合**，顺序为：
+`model-provider-routes-0.159.patch` → `fork-provider-binding-0.159.patch` →
+`subagent-provider-binding-0.159.patch` → `parent-completion-0.159.patch`，
+由 `config/binding-patches-0.159.json` 定义。
+
+## Windows 0.159.2 交付入口
+
+复用已有 `E:\Projects\codex`，先验证冻结 HEAD 上的补丁适用性，不改变源码、不编译：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -VerifyOnly -EnginePath E:\Projects\codex
+node tools/binding-patches.mjs --engine E:\Projects\codex
 ```
 
-0.159 路由/会话、分叉、子代理三份补丁已迁移。在干净冻结源码上使用
-`-BindingPatchesOnly -VerifyOnly -EnginePath E:\Projects\codex` 按序检查；省略 `-VerifyOnly`
-只应用、不编译。详见[迁移映射与源码交接](docs/binding-migration-0.159.md)。
-第四补丁已迁移，`-CombinedPatch -VerifyOnly` 可检查四份组合；干净源码上省略 `-VerifyOnly`
-可应用并构建 debug CLI。本机共享源码已有补丁，不能重新安装。
-[#31](https://github.com/immorcoding/codex-multiprovider/issues/31) 的 Windows 组合 CLI、focused Rust
-与公开离线验收已通过，并修复关闭 wake 时下一用户轮次消费旧完成邮件的问题。
-复用前核对[修复后的源码/补丁/产物指纹及验收结果](docs/glm-responses-validation-0.159.md)。
-PR CI 只跑 Windows 轻量检查，重型 Rust 验证仅手动触发。详见[冻结基线与交接](docs/engine-baseline.md)。
-下文 0.158/0.154 的行为与安装说明均为各自固定 SHA 的历史证据，不代表 0.159 已兼容；
-TypeScript SDK 0.159.2 已在 #32 通过离线验收，Python SDK/runtime 0.159.2 已在 #33 用同一补丁 CLI 通过同步离线验收。
+在冻结 SHA 的**干净**源码上省略 `-VerifyOnly`，即可应用全部四补丁，在该 checkout 的
+`codex-rs/target` 构建一次 debug CLI；`-CombinedPatch` 保留为显式别名。
+安装器拒绝已打补丁的 dirty 源码；保留它并复用已验证产物，无需第二份 checkout 或缓存。
+`install-engine.cmd` 透传相同参数，也要求 `-EnginePath`。
+
+交付 CLI 为 **`E:\Projects\codex\codex-rs\target\debug\codex.exe`**，版本
+`codex-cli 0.159.2`，SHA-256：
+`23405b52983bfb275f50500ccea8821af0e9d5889197e3978f1300f45606bb41`。
+先按 [#31 产物记录](docs/engine-validation-0.159.json) 核验实际 42 个补丁源码 blob、
+Cargo.lock、真实 index 与 binary，再复用现有 SDK 环境执行最终矩阵：
+
+```powershell
+node tools/verify-engine-artifact.mjs --engine E:\Projects\codex
+node tools/validate-windows.mjs E:\Projects\codex work/python-sdk/Scripts/python.exe
+```
+
+矩阵只用 loopback mock、假 key 与隔离用户状态，要求全部 suite 执行且零 skip，日志保存在
+`work/issue16-validation-*`。配置/模型目录、SDK 指向此 CLI 的命令、本机与 PR CI 覆盖、
+focused Rust 复用证据见 [Windows 最终交付报告](docs/windows-delivery-0.159.md)。
+PR 自动 CI 运行 Windows 轻量适用性、安装器、语法和 TypeScript 类型检查；远程 Rust 仅手动。
+同步 Python SDK 与 TypeScript SDK 使用公开 `0.159.2` 包和显式 CLI 覆盖；
+默认 SDK 包与微软商店桌面引擎不含本仓库补丁。GLM 在线 #17/#18 仍未验证，
+Python 异步对等与 Python 父/子代理策略仍未验。
+
+`-BaselineOnly` 选择 stock 源码验证/构建，`-BindingPatchesOnly` 只处理前三补丁且不构建
+（生成器用 `--bindings-only`），`--parent-only` 独立检查第四补丁。
+`--regenerate` 用临时 index 从输入 patch 重建 diff，不捕获额外 working source 修改。
+详见[冻结基线](docs/engine-baseline.md)。
+
+## 历史 0.158 证据
 
 [#8](https://github.com/immorcoding/codex-multiprovider/issues/8) 与
 [#9](https://github.com/immorcoding/codex-multiprovider/issues/9) 的历史 **0.158.0 路由与会话绑定**补丁为
@@ -45,11 +72,11 @@ TypeScript SDK 0.159.2 已在 #32 通过离线验收，Python SDK/runtime 0.159.
 运行 mock 供应商行为测试。[#10](https://github.com/immorcoding/codex-multiprovider/issues/10)
 的 `patch/fork-provider-binding-0.158.patch` 需在同一份 0.158.0 源码上**接着路由补丁应用**，
 然后重新构建 `codex-cli`。app-server 和 `codex exec fork` 继承来源线程的供应商及最后模型；
-显式同供应商模型可用，跨供应商分叉会报错，持久分叉恢复后仍保持绑定。安装脚本目前只构建
-路由补丁，若要使用分叉语义须手动应用增量补丁并重新构建。以下安装步骤仍针对默认的
+显式同供应商模型可用，跨供应商分叉会报错，持久分叉恢复后仍保持绑定。历史 `-RoutingPatch` 只构建
+路由补丁，若要使用分叉语义须手动应用增量补丁并重新构建。以下历史安装步骤针对显式 `-LegacyPatch` 的
 **旧版 0.154.0** 补丁；新版尚未包含旧补丁的中转、子代理与桌面集成功能；子代理继承另票处理。
 
-### Z.AI Coding Plan / GLM-5.3-Flash（仅离线 mock）
+## Z.AI Coding Plan / GLM-5.3-Flash（仅离线 mock）
 
 当前 0.159.2 CLI 在 `ff6aec96948b70d94983af2641a6b67c94faeff5` 上使用
 `config/binding-patches-0.159.json` 的有序四补丁；GLM Responses 离线直连通过，
@@ -123,7 +150,12 @@ work/python-sdk/Scripts/python.exe -m pytest -q -p no:cacheprovider tools/sdk/py
 * 子代理继承父代理的供应商；子代理选到别家的模型会被拒绝。
 * 路由指向未配置的供应商会导致配置加载失败。
 
-## 三块拼图
+## 历史 0.154 桌面工作流
+
+以下安装与桌面行为描述历史 `1715e55076737158ba61d43158ede504de6d4ce1` 补丁，
+须显式使用 `-LegacyPatch`，不代表 0.159 桌面兼容已通过。
+
+## 三块拼图（历史）
 
 | 部分 | 路径 | 作用 |
 | --- | --- | --- |
@@ -146,15 +178,15 @@ work/python-sdk/Scripts/python.exe -m pytest -q -p no:cacheprovider tools/sdk/py
 `install-engine.ps1` 在缺少 `git` 或 `cargo` 时直接停下并给出安装提示。Windows 上 rustup 会提供
 MSVC C++ 生成工具，接受后重开终端。
 
-## 安装
+## 安装（历史 0.154）
 
 ### 1. 编译引擎
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1
+powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1 -LegacyPatch
 ```
 
-也可双击 `tools\install-engine.cmd`。脚本按钉住的提交克隆上游、应用
+也可运行 `tools\install-engine.cmd -LegacyPatch`。此历史模式按钉住的提交克隆上游、应用
 `patch\model-provider-routes.patch`、编译 `codex.exe`；checkout 不干净或提交不符时拒绝执行。
 
 手动等价操作：

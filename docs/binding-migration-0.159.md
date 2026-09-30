@@ -51,15 +51,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -Bi
 # 干净冻结源码：预检全部补丁后逐份 check/apply；不构建部分 CLI
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BindingPatchesOnly -EnginePath E:\Projects\codex
 # 使用 HEAD 的临时 Git index 重建每一阶段的完整 blob 指纹和 diff
-node tools/binding-patches.mjs --engine E:\Projects\codex --regenerate
+node tools/binding-patches.mjs --engine E:\Projects\codex --bindings-only --regenerate
 ```
 
 生成器将记录中的补丁作为输入，基于冻结 HEAD 逐份 `apply --cached --check`、应用并生成
 相邻 tree 的 diff；它不会捕获额外的 working tree 修改，也不会更改真实 index/工作源码。
 只创建临时 index 与 Git tree/blob 对象，不创建 checkout/commit。`--series` 可指向同名
-三补丁的替代输入记录；顺序错误先拒绝。全部预检通过后才写回 diff 或开始实际应用。
+四补丁的替代输入记录；`--bindings-only` 仅处理前三份。顺序错误先拒绝。全部预检通过后才写回 diff 或开始实际应用。
 安装器要求现有 checkout、准确 SHA 和 clean source；当前交接源码已 dirty，因此不要重新安装。
-dirty 源码上可直接运行生成器的默认检查，它检查冻结 HEAD 上的补丁适用性，不证明当前 working tree 内容。
+dirty 源码上可运行生成器检查冻结 HEAD 上的补丁适用性，不证明当前 working tree 内容。
+#16 已把生成器默认值改为四份组合；重现本节三补丁快照须显式 `--bindings-only`。
 历史 `sync-to-public.ps1` 仍服务旧整体补丁；新版三补丁使用此独立生成入口。
 
 在 #29 交接时，`-CombinedPatch` 尚未接通；#30 已接通第四补丁与组合入口并 retarget manual CI。

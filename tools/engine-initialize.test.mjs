@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { isolatedCliEnv } from './sdk/isolated-cli-env.mjs';
 
 async function initializeAppServer(binary) {
   const probeHome = mkdtempSync(path.join(tmpdir(), 'codex-mp-baseline-'));
+  writeFileSync(path.join(probeHome, 'config.toml'), '[features]\nplugins = false\n');
   try {
     const response = await new Promise((resolve, reject) => {
       const child = spawn(binary, ['app-server'], {
-        env: { ...process.env, CODEX_HOME: probeHome },
+        env: isolatedCliEnv(probeHome, 'initialize-probe-fake-key'),
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       let output = '';
@@ -47,18 +49,22 @@ async function initializeAppServer(binary) {
     });
     assert.equal(response.id, 1);
     assert.ok(response.result, JSON.stringify(response));
+    assert.match(response.result.userAgent, /\/0\.159\.2 /);
+    assert.equal(response.result.platformFamily, 'windows');
+    assert.equal(response.result.platformOs, 'windows');
+    return response.result;
   } finally {
     assert.ok(probeHome.startsWith(`${path.resolve(tmpdir())}${path.sep}`));
     rmSync(probeHome, { recursive: true, force: true });
   }
 }
 
-test('the combined Windows CLI reports the release version and initializes', async () => {
+test('the combined Windows CLI reports the release version and initializes', async (t) => {
   const binary = process.env.CODEX_TEST_ROUTED_BINARY;
   assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the 0.159.2 combined debug CLI (#31/#16); this test never builds it');
   const version = spawnSync(binary, ['--version'], { encoding: 'utf8', timeout: 30_000 });
   assert.ifError(version.error);
   assert.equal(version.status, 0, version.stderr);
   assert.match(version.stdout, /\b0\.159\.2\b/);
-  await initializeAppServer(binary);
+  t.diagnostic(JSON.stringify(await initializeAppServer(binary)));
 });

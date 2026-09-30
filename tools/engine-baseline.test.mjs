@@ -67,7 +67,7 @@ test('baseline verification rejects another commit without checking out or modif
 test('historical installers reject 0.159 source without applying old diffs', () => {
   assert.ok(checkout);
   const before = run('git', ['-C', checkout, 'status', '--porcelain']).stdout;
-  for (const args of [[], ['-RoutingPatch']]) {
+  for (const args of [['-LegacyPatch'], ['-RoutingPatch']]) {
     const result = install(...args, '-EnginePath', checkout);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /checked out .* but this build needs/);
@@ -78,7 +78,7 @@ test('historical installers reject 0.159 source without applying old diffs', () 
 test('combined installation rejects dirty source without discarding patches or compiling', () => {
   const before = run('git', ['-C', checkout, 'status', '--porcelain']).stdout;
   if (!before.trim()) return; // Clean apply is covered by the Windows lightweight workflow.
-  const result = install('-CombinedPatch', '-EnginePath', checkout);
+  const result = install('-EnginePath', checkout);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /uncommitted changes/);
   assert.equal(run('git', ['-C', checkout, 'status', '--porcelain']).stdout, before);
@@ -96,7 +96,12 @@ test('stable modes require an existing checkout and unambiguous options', () => 
     ['-BindingPatchesOnly', '-RoutingPatch', '-EnginePath', checkout],
     ['-CombinedPatch'],
     ['-CombinedPatch', '-WorkDir', 'unused-engine', '-EnginePath', checkout],
-    ['-VerifyOnly', '-EnginePath', checkout],
+    [],
+    ['-VerifyOnly'],
+    ['-VerifyOnly', '-EnginePath', checkout, '-WorkDir', 'unused-engine'],
+    ['-LegacyPatch', '-CombinedPatch', '-EnginePath', checkout],
+    ['-LegacyPatch', '-RoutingPatch', '-EnginePath', checkout],
+    ['-LegacyPatch', '-VerifyOnly', '-EnginePath', checkout],
   ]) {
     const result = install(...args);
     assert.notEqual(result.status, 0);

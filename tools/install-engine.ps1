@@ -5,11 +5,11 @@
 .DESCRIPTION
   -BaselineOnly -VerifyOnly checks the pinned SHA and clean state without Rust or patches.
   -BaselineOnly without -VerifyOnly builds stock upstream; it requires an existing -EnginePath.
-  -CombinedPatch verifies/applies four 0.159 patches, then builds one debug CLI.
+  The default (also -CombinedPatch) verifies/applies four 0.159 patches, then builds one debug CLI.
   -BindingPatchesOnly verifies/applies the three 0.159 binding diffs without compiling.
   Add -VerifyOnly to leave working source unchanged (checks use a temporary Git index).
-  -RoutingPatch is the historical 0.158 single routing patch mode. The default remains the
-  historical 0.154 patch mode. Historical modes reject new source and may clone under -WorkDir.
+  -RoutingPatch selects historical 0.158 routing; -LegacyPatch selects historical 0.154.
+  Historical modes reject new source and may clone under -WorkDir.
   Existing checkouts are never switched or reset. No Microsoft Store client files are modified.
 
 .PARAMETER EnginePath
@@ -17,8 +17,7 @@
 .PARAMETER WorkDir
   Clone destination for historical modes only.
 .PARAMETER Profile
-  Cargo profile (release or debug); default release preserves historical installer behavior.
-  This round uses -VerifyOnly, then a single combined debug build in #31/#16.
+  Cargo profile (release or debug); stable modes default debug, historical modes default release.
 .PARAMETER BaselineOnly
   Select frozen 0.159.2 source without any patches.
 .PARAMETER VerifyOnly
@@ -27,19 +26,22 @@
   Check/apply the three 0.159 binding patches in order; never builds a partial CLI.
 .PARAMETER RoutingPatch
   Historical 0.158 routing and session-binding patch (#8/#9), not the full combination.
+.PARAMETER LegacyPatch
+  Explicit historical 0.154 patch mode.
 .PARAMETER CombinedPatch
   Four 0.159.2 patches in the shared order; default debug profile. VerifyOnly uses HEAD,
   even with dirty source, and never modifies the real index or working files.
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
+  powershell -NoProfile -ExecutionPolicy Bypass -File install-engine.ps1 -VerifyOnly -EnginePath E:\Projects\codex
 #>
 param(
     [string]$EnginePath,
     [string]$WorkDir,
     [ValidateSet('release', 'debug')]
-    [string]$Profile = 'release',
+    [string]$Profile = 'debug',
     [switch]$BaselineOnly,
     [switch]$RoutingPatch,
+    [switch]$LegacyPatch,
     [switch]$CombinedPatch,
     [switch]$BindingPatchesOnly,
     [switch]$VerifyOnly
@@ -53,10 +55,11 @@ Set-StrictMode -Version Latest
 $LegacyPatchSha = '1715e55076737158ba61d43158ede504de6d4ce1'
 $HistoricalRoutingSha = '064c6b8c737f5b41d171fdda80bd9ef10ad06eb3'
 $Baseline = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\config\engine-baseline.json') | ConvertFrom-Json
-if (@($BaselineOnly, $RoutingPatch, $CombinedPatch, $BindingPatchesOnly).Where({ $_ }).Count -gt 1) {
-    throw '-BaselineOnly, -RoutingPatch, -CombinedPatch and -BindingPatchesOnly cannot be combined.'
+if (@($BaselineOnly, $RoutingPatch, $LegacyPatch, $CombinedPatch, $BindingPatchesOnly).Where({ $_ }).Count -gt 1) {
+    throw '-BaselineOnly, -RoutingPatch, -LegacyPatch, -CombinedPatch and -BindingPatchesOnly cannot be combined.'
 }
-if ($CombinedPatch -and -not $PSBoundParameters.ContainsKey('Profile')) { $Profile = 'debug' }
+if (-not ($BaselineOnly -or $RoutingPatch -or $LegacyPatch -or $BindingPatchesOnly)) { $CombinedPatch = $true }
+if (($RoutingPatch -or $LegacyPatch) -and -not $PSBoundParameters.ContainsKey('Profile')) { $Profile = 'release' }
 if ($VerifyOnly -and -not ($BaselineOnly -or $BindingPatchesOnly -or $CombinedPatch)) {
     throw '-VerifyOnly requires -BaselineOnly, -BindingPatchesOnly or -CombinedPatch.'
 }
@@ -146,10 +149,10 @@ $dirty = @(Invoke-Git -What 'checking source status' -Arguments @('-C', $EngineP
 if (($BindingPatchesOnly -or $CombinedPatch) -and $VerifyOnly) {
     Test-Tool -Name 'node' -InstallHint 'Install Node.js 22 or newer.'
     $verifyArguments = @((Join-Path $PSScriptRoot 'binding-patches.mjs'), '--engine', $EnginePath)
-    if ($CombinedPatch) { $verifyArguments += '--combined' }
+    if ($BindingPatchesOnly) { $verifyArguments += '--bindings-only' }
     & node @verifyArguments
     if ($LASTEXITCODE -ne 0) { throw 'Patch verification failed.' }
-    Write-Note 'HEAD applicability only; working source is unchanged and is not verified. Combined runtime validation waits for #31.'
+    Write-Note 'HEAD applicability only; working source is unchanged and is not verified. See docs/windows-delivery-0.159.md for artifact verification and offline acceptance.'
     return
 }
 if ($dirty.Count -gt 0) {
@@ -162,11 +165,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $EnginePath 'codex-rs\Cargo.toml')))
 }
 if ($BindingPatchesOnly) {
     Test-Tool -Name 'node' -InstallHint 'Install Node.js 22 or newer.'
-    $bindingArguments = @((Join-Path $PSScriptRoot 'binding-patches.mjs'), '--engine', $EnginePath)
+    $bindingArguments = @((Join-Path $PSScriptRoot 'binding-patches.mjs'), '--engine', $EnginePath, '--bindings-only')
     if (-not $VerifyOnly) { $bindingArguments += '--apply' }
     & node @bindingArguments
     if ($LASTEXITCODE -ne 0) { throw 'Binding patch verification failed.' }
-    Write-Note 'Diff/applicability only. No Rust build; combined runtime validation waits for #31.'
+    Write-Note 'Diff/applicability only. No Rust build; this partial mode is not the four-patch delivery.'
     return
 }
 if ($VerifyOnly) {
@@ -210,6 +213,8 @@ if ($Profile -eq 'release') { $cargoArguments += '--release' }
 # previously clean upstream checkout exactly as it found it.
 $baselineLockPath = Join-Path $EnginePath 'codex-rs\Cargo.lock'
 $baselineLockBytes = if ($BaselineOnly) { [System.IO.File]::ReadAllBytes($baselineLockPath) } else { $null }
+$previousTarget = $env:CARGO_TARGET_DIR
+if ($BaselineOnly -or $CombinedPatch) { $env:CARGO_TARGET_DIR = Join-Path $EnginePath 'codex-rs\target' }
 Push-Location (Join-Path $EnginePath 'codex-rs')
 try {
     & cargo @cargoArguments
@@ -219,6 +224,7 @@ try {
 }
 finally {
     Pop-Location
+    $env:CARGO_TARGET_DIR = $previousTarget
     if ($BaselineOnly) {
         [System.IO.File]::WriteAllBytes($baselineLockPath, $baselineLockBytes)
     }
@@ -239,6 +245,11 @@ if ($BaselineOnly) {
 if ($RoutingPatch) {
     Write-Note 'This engine contains model-provider routing and session binding; legacy proxy and agent additions are not included.'
     Write-Note 'Configure model_providers and model_provider_routes in an isolated CODEX_HOME to try it.'
+    return
+}
+if ($CombinedPatch) {
+    Write-Note 'Windows 0.159.2 four-patch CLI. See docs/windows-delivery-0.159.md for offline checks and SDK path overrides.'
+    Write-Note 'Use an isolated CODEX_HOME with config/zai-coding-plan.config-snippet.toml and config/zai-models.json.'
     return
 }
 Write-Host ''

@@ -6,6 +6,17 @@ import path from 'node:path';
 import test from 'node:test';
 
 const checkout = process.env.CODEX_TEST_UPSTREAM_CHECKOUT;
+test('the default installer verifies the 0.159.2 four-patch delivery without building', () => {
+  assert.ok(checkout);
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    path.resolve('tools/install-engine.ps1'), '-VerifyOnly', '-EnginePath', checkout],
+  { encoding: 'utf8', timeout: 30_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /4 combined patches verified/);
+  assert.match(result.stdout, /1f419cca875711ec60c723b78eae465c8fa6a47c/);
+});
+
 test('the combined installer verifies four patches on the shared dirty checkout without building or changing source/index', () => {
   assert.ok(checkout);
   const status = () => spawnSync('git', ['-C', checkout, 'status', '--porcelain'], { encoding: 'utf8' }).stdout;
@@ -47,6 +58,16 @@ test('the new parent completion patch applies independently at the frozen SHA', 
   assert.ifError(result.error);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /1 parent completion patches verified/);
+});
+
+test('the default patch generator includes parent completion in the frozen delivery', () => {
+  assert.ok(checkout);
+  const result = spawnSync(process.execPath, ['tools/binding-patches.mjs', '--engine', checkout],
+    { encoding: 'utf8', timeout: 30_000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /4 combined patches verified/);
+  assert.match(result.stdout, /1f419cca875711ec60c723b78eae465c8fa6a47c/);
 });
 
 test('a wrong patch order fails preflight without changing the engine', () => {
