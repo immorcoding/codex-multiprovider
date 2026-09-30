@@ -17,9 +17,12 @@ const expectedOrder = ['model-provider-routes-0.159.patch', 'fork-provider-bindi
 if (series.some((file, index) => path.basename(file) !== expectedOrder[index])) {
   throw Error('Patches must follow the routing/session, fork, subagent order, then parent completion');
 }
-const combined = args.includes('--combined');
 const parentOnly = args.includes('--parent-only');
-if (combined && parentOnly) throw Error('--combined cannot be combined with --parent-only');
+const bindingsOnly = args.includes('--bindings-only');
+if ([args.includes('--combined'), parentOnly, bindingsOnly].filter(Boolean).length > 1) {
+  throw Error('--combined, --bindings-only and --parent-only cannot be combined');
+}
+const combined = !parentOnly && !bindingsOnly;
 const patches = (parentOnly ? series.slice(3) : series.slice(0, combined ? 4 : 3)).map((file) => path.resolve(repository, file));
 const regenerate = args.includes('--regenerate');
 const apply = args.includes('--apply');

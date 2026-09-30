@@ -1,0 +1,201 @@
+{
+  "issue": 16,
+  "platform": "windows-x64",
+  "output": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU",
+  "startedAt": "2026-09-30T10:27:47.668Z",
+  "steps": [
+    {
+      "name": "artifact-before",
+      "command": "D:\\nodejs\\node.exe",
+      "args": [
+        "tools/verify-engine-artifact.mjs",
+        "--engine",
+        "E:\\Projects\\codex"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 5.6847627,
+      "logPath": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\artifact-before.log"
+    },
+    {
+      "name": "script-syntax",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "tools/check-scripts.ps1"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 1.4038337999999995,
+      "logPath": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\script-syntax.log"
+    },
+    {
+      "name": "typescript-typecheck",
+      "command": "D:\\nodejs\\node.exe",
+      "args": [
+        "tools/sdk/node_modules/typescript/bin/tsc",
+        "--noEmit",
+        "--project",
+        "tools/sdk/tsconfig.json"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 2.715692400000001,
+      "logPath": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\typescript-typecheck.log"
+    },
+    {
+      "name": "python-mypy",
+      "command": "E:\\Projects\\codex-multiprovider\\work\\python-sdk\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "mypy",
+        "--strict",
+        "--cache-dir",
+        "work/mypy-cache",
+        "tools/sdk/python/public_api.py"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 0.27417040000000087,
+      "logPath": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\python-mypy.log"
+    },
+    {
+      "name": "node-matrix",
+      "command": "D:\\nodejs\\node.exe",
+      "args": [
+        "--test",
+        "--test-concurrency=1",
+        "--test-reporter=tap",
+        "tools/engine-baseline.test.mjs",
+        "tools/binding-patches.test.mjs",
+        "tools/engine-artifact.test.mjs",
+        "tools/proxy-transforms.test.mjs",
+        "tools/engine-initialize.test.mjs",
+        "tools/model-routing.test.mjs",
+        "tools/glm-responses.test.mjs",
+        "tools/sdk/sdk-routing.test.mjs"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 70.4585392,
+      "logPath": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\node-matrix.log"
+    },
+    {
+      "name": "python-matrix",
+      "command": "E:\\Projects\\codex-multiprovider\\work\\python-sdk\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "pytest",
+        "-q",
+        "tools/sdk/python/test_routing.py",
+        "-p",
+        "no:cacheprovider",
+        "--basetemp",
+        "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\pytest"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 4.792425900000002,
+      "logPath": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\python-matrix.log"
+    },
+    {
+      "name": "artifact-after",
+      "command": "D:\\nodejs\\node.exe",
+      "args": [
+        "tools/verify-engine-artifact.mjs",
+        "--engine",
+        "E:\\Projects\\codex"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 5.567758399999992,
+      "logPath": "E:\\Projects\\codex-multiprovider\\work\\issue16-validation-7plRrU\\artifact-after.log"
+    }
+  ],
+  "artifact": {
+    "sourceSha": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+    "patchTree": "1f419cca875711ec60c723b78eae465c8fa6a47c",
+    "buildSourceTree": "8657d695298d8affdb3bb7133dd2a90694a0ae12",
+    "verifiedPatchSourceBlobs": 42,
+    "verifiedBuildSourceBlobs": 43,
+    "realIndexMatchesFrozenHead": true,
+    "patches": [
+      {
+        "path": "patch/model-provider-routes-0.159.patch",
+        "sha256": "d083daffc7f6efd33cfee28296dedafbb4902360af6e9242ea59ad89dafd27e8"
+      },
+      {
+        "path": "patch/fork-provider-binding-0.159.patch",
+        "sha256": "92341fd6a8fb85c35c4dc8320b4904998f3ff0dd040dc589cebb17d8431f36c0"
+      },
+      {
+        "path": "patch/subagent-provider-binding-0.159.patch",
+        "sha256": "c4b9bc2dbcf8e256ff036bab06897ae3d83566a9ece15f2f5e2668c0c543bc55"
+      },
+      {
+        "path": "patch/parent-completion-0.159.patch",
+        "sha256": "b138c131a34e3db554489130b6e4a5ab6e8bc815a368a941c825c79fdbfc5fa1"
+      }
+    ],
+    "cargoLockSha256": "e85460a5c2a1f92d73ca0a40219c846f6a10d729f3186667485372c3aa82cfbf",
+    "binaryPath": "E:\\Projects\\codex\\codex-rs\\target\\debug\\codex.exe",
+    "binarySha256": "23405b52983bfb275f50500ccea8821af0e9d5889197e3978f1300f45606bb41",
+    "version": "codex-cli 0.159.2"
+  },
+  "node": {
+    "passed": 54,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "python": {
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0
+  },
+  "completedAt": "2026-09-30T10:29:18.569Z",
+  "sourceRepositoryBaseCommit": "942d1b1a00667baecef6ff8dc7be904f65c97c8e",
+  "deliveryBranch": "codex/windows-delivery-0.159.2",
+  "publishedVersions": {
+    "@openai/codex-sdk": "0.159.2",
+    "openai-codex": "0.159.2",
+    "openai-codex-cli-bin": "0.159.2"
+  },
+  "reusedRust": {
+    "source": "docs/engine-validation-0.159.json",
+    "core": {
+      "passed": 51,
+      "failed": 0,
+      "filteredOut": 2496,
+      "retried": 0,
+      "buildDuration": "1m 45s",
+      "runDurationSeconds": 29.774,
+      "nextestRunId": "71e3cbc4-89cf-4a4c-a477-44d168669a6d"
+    },
+    "appServer": {
+      "passed": 7,
+      "failed": 0,
+      "filteredOut": 1369,
+      "retried": 0,
+      "buildDuration": "36.28s",
+      "runDurationSeconds": 14.743,
+      "nextestRunId": "61688da4-e311-4e2b-adc9-2fb076363882"
+    },
+    "rerun": false,
+    "fingerprintsMatched": true
+  },
+  "serviceEvidence": {
+    "zaiCodingPlan": "offline-loopback-only",
+    "zaiPayAsYouGo": "unverified",
+    "realModelApiCalls": 0
+  },
+  "ci": {
+    "automaticPullRequest": "windows-lightweight-and-typescript-typecheck",
+    "remoteHeavyDispatched": false,
+    "currentHeadEvidence": "PR checks and final delivery report"
+  },
+  "postMatrixChecks": [
+    "artifact verifier with disposable HOME passed",
+    "artifact guard 1/1 passed",
+    "script syntax passed",
+    "default four-patch regeneration unchanged",
+    "actionlint 1.7.7 passed",
+    "git diff --check passed"
+  ]
+}

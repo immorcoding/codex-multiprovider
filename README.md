@@ -1,6 +1,6 @@
 # codex-multiprovider (unofficial patch)
 
-[![patch applies](https://github.com/2213778958/codex-multiprovider/actions/workflows/patch-applies.yml/badge.svg)](https://github.com/2213778958/codex-multiprovider/actions/workflows/patch-applies.yml)
+[![patch applies](https://github.com/immorcoding/codex-multiprovider/actions/workflows/patch-applies.yml/badge.svg)](https://github.com/immorcoding/codex-multiprovider/actions/workflows/patch-applies.yml)
 
 **English** | [中文说明](README.zh-CN.md)
 
@@ -8,33 +8,59 @@
 > external contributions (`openai/codex` `docs/contributing.md`: "We do not accept external code
 > contributions or pull requests"), so this ships as a local patch, not a pull request.
 
-Adds a second model provider (DeepSeek by default) to the Codex desktop model picker, and pins every
-session to the provider it starts on. The desktop client is not modified.
+Adds model-provider routing, session/fork/subagent provider binding, and once-only parent completion
+delivery to the open-source Codex CLI. The delivery below covers Windows x64 offline behavior.
 
 The current delivery baseline is **Windows x64, Codex 0.159.2**, tag `rust-v0.159.2`,
 source `ff6aec96948b70d94983af2641a6b67c94faeff5`. CLI, TypeScript SDK, Python SDK and Python
 runtime release versions are all `0.159.2`; source placeholder versions are not release versions.
-Reuse the existing `E:\Projects\codex` checkout and verify it without compiling:
+The **default installer and patch generator now select all four 0.159 patches**, in this order:
+`model-provider-routes-0.159.patch` → `fork-provider-binding-0.159.patch` →
+`subagent-provider-binding-0.159.patch` → `parent-completion-0.159.patch`.
+The order is defined in `config/binding-patches-0.159.json`.
+
+## Windows 0.159.2 delivery
+
+Reuse the existing `E:\Projects\codex` checkout. First check frozen HEAD applicability without
+changing source or compiling:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -VerifyOnly -EnginePath E:\Projects\codex
+node tools/binding-patches.mjs --engine E:\Projects\codex
 ```
 
-The three 0.159 routing/session, fork and subagent diffs are migrated. From clean frozen source,
-`-BindingPatchesOnly -VerifyOnly -EnginePath E:\Projects\codex` checks them in order; omit `-VerifyOnly`
-to apply without compiling. See [the migration map and source handoff](docs/binding-migration-0.159.md).
-The combined 0.159.2 CLI now passes local Windows focused Rust and offline public acceptance.
-The fourth patch is migrated: `-CombinedPatch -VerifyOnly -EnginePath E:\Projects\codex` checks all
-four against frozen HEAD without changing the shared dirty source. On clean source, omit `-VerifyOnly`
-to apply and build one debug CLI. See [parent completion migration and #31 handoff](docs/parent-completion-migration-0.159.md).
-[#31](https://github.com/immorcoding/codex-multiprovider/issues/31) also fixes queued parent completion
-processing on the next user turn. Reuse the repaired CLI only after checking
-[the final source/patch/binary fingerprints and results](docs/glm-responses-validation-0.159.md).
-PR CI runs Windows lightweight checks;
-heavy Rust validation is manual only. See [the frozen baseline and handoff](docs/engine-baseline.md).
-The 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
-they do not establish 0.159 compatibility. TypeScript SDK 0.159.2 offline acceptance passes under #32;
-Python SDK/runtime 0.159.2 synchronous offline acceptance passes under #33 with the same patched CLI.
+For a **clean** checkout at the frozen SHA, omit `-VerifyOnly` to apply all four patches and build
+one debug CLI in that checkout's `codex-rs/target`. `-CombinedPatch` remains an explicit alias.
+An existing patched checkout is rejected by the build installer; keep its source and reuse its
+verified binary. No second checkout or cache is needed. `install-engine.cmd` forwards the same
+arguments and also requires `-EnginePath`.
+
+The delivered CLI is **`E:\Projects\codex\codex-rs\target\debug\codex.exe`**, reporting
+`codex-cli 0.159.2`, SHA-256
+`23405b52983bfb275f50500ccea8821af0e9d5889197e3978f1300f45606bb41`.
+Verify the actual 42 patch-source blobs, Cargo.lock, real index and binary against the
+[#31 artifact record](docs/engine-validation-0.159.json), then run the final matrix with the existing SDK environments:
+
+```powershell
+node tools/verify-engine-artifact.mjs --engine E:\Projects\codex
+node tools/validate-windows.mjs E:\Projects\codex work/python-sdk/Scripts/python.exe
+```
+
+The matrix uses loopback mocks, fake keys and isolated user state, requires every suite with zero
+skips, and saves logs under `work/issue16-validation-*`. See [the Windows delivery results and
+reproduction commands](docs/windows-delivery-0.159.md) for configuration/catalog setup, SDK path
+overrides, local versus PR CI coverage, and reused focused Rust evidence. PR CI runs Windows
+lightweight applicability, installer, syntax and TypeScript type checks; remote Rust is manual only.
+The synchronous Python SDK and TypeScript SDK use published `0.159.2` packages with explicit CLI
+overrides. Their default packages and the Microsoft Store desktop engine do not include these patches.
+Online GLM remains unverified under #17/#18; async Python parity and Python parent/subagent policy remain untested.
+
+`-BaselineOnly` selects stock source verification/build, `-BindingPatchesOnly` selects only the
+first three diffs without a build (generator: `--bindings-only`), and `--parent-only` checks the
+fourth independently. `--regenerate` rebuilds diffs from the patch inputs via a temporary index;
+it does not capture extra working source changes. See [the frozen baseline](docs/engine-baseline.md).
+
+## Historical 0.158 evidence
 
 The **historical 0.158.0 routing and session-binding** patch for [#8](https://github.com/immorcoding/codex-multiprovider/issues/8)
 and [#9](https://github.com/immorcoding/codex-multiprovider/issues/9)
@@ -51,7 +77,7 @@ For [#10](https://github.com/immorcoding/codex-multiprovider/issues/10), apply
 `patch/fork-provider-binding-0.158.patch` **after** the routing patch on the same 0.158.0 source,
 then rebuild `codex-cli`. App-server and `codex exec fork` inherit the source provider and last
 model; an explicit same-provider model is allowed, while cross-provider forks fail. A persisted fork
-retains that binding when resumed. The installer currently builds only the routing patch, so apply
+retains that binding when resumed. The historical `-RoutingPatch` mode builds only the routing patch, so apply
 this incremental patch and rebuild before using the fork behavior.
 For [#11](https://github.com/immorcoding/codex-multiprovider/issues/11), apply
 `patch/subagent-provider-binding-0.158.patch` after the routing and fork patches. Explicit,
@@ -60,10 +86,10 @@ role-default, and system-default child models resolve against the parent's route
 provider named in the error, even if a default role would later replace it. An unchanged, unmapped
 parent model can be inherited under a session-level provider override. No model is silently
 substituted. The setup below still describes
-the **legacy 0.154.0** default installer mode; these 0.158.0 patches do not include its proxy,
+the explicit **legacy 0.154.0** `-LegacyPatch` installer mode; these 0.158.0 patches do not include its proxy,
 or desktop integration additions.
 
-### Z.AI Coding Plan / GLM-5.3-Flash (offline mock only)
+## Z.AI Coding Plan / GLM-5.3-Flash (offline mock only)
 
 The current 0.159.2 CLI uses the four patches in `config/binding-patches-0.159.json` on
 `ff6aec96948b70d94983af2641a6b67c94faeff5`. Its GLM Responses contract passes offline without
@@ -147,7 +173,12 @@ ordinary pay-as-you-go identity does not inherit this offline Coding Plan eviden
 
 <!-- sync:begin -->
 
-## Pieces
+## Historical 0.154 desktop workflow
+
+The setup and desktop behavior below describe the historical `1715e55076737158ba61d43158ede504de6d4ce1`
+patch and require explicit `-LegacyPatch`. They do not establish 0.159 desktop compatibility.
+
+## Pieces (historical)
 
 | Piece | Path | Purpose |
 | --- | --- | --- |
@@ -170,15 +201,15 @@ The rest of `tools/` is the launcher, watchdog, key storage, and probes.
 `install-engine.ps1` stops with an install hint when `git` or `cargo` is missing. rustup offers the
 MSVC C++ build tools on Windows; accept, then reopen the shell.
 
-## Setup
+## Setup (historical 0.154)
 
 ### 1. Build the engine
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1
+powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1 -LegacyPatch
 ```
 
-Or double-click `tools\install-engine.cmd`. Clones upstream at the pinned commit, applies
+Or run `tools\install-engine.cmd -LegacyPatch`. This historical mode clones upstream at the pinned commit, applies
 `patch\model-provider-routes.patch`, and builds `codex.exe`. Refuses a dirty checkout or a commit
 other than the pinned one.
 

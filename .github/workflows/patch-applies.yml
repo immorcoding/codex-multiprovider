@@ -38,10 +38,16 @@ jobs:
       - name: Verify release pins and installer rejection conditions without compiling
         run: |
           $env:CODEX_TEST_UPSTREAM_CHECKOUT = Join-Path $env:GITHUB_WORKSPACE 'upstream'
-          node --test --test-concurrency=1 tools/engine-baseline.test.mjs tools/binding-patches.test.mjs tools/proxy-transforms.test.mjs
+          node --test --test-concurrency=1 tools/engine-baseline.test.mjs tools/binding-patches.test.mjs tools/engine-artifact.test.mjs tools/proxy-transforms.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'lightweight tests failed' }
-      - name: Check and apply all four 0.159 patches in shared order (no Rust)
-        run: node tools/binding-patches.mjs --engine (Join-Path $env:GITHUB_WORKSPACE 'upstream') --combined --apply
+      - name: Check and apply the default four-patch delivery (no Rust)
+        run: node tools/binding-patches.mjs --engine (Join-Path $env:GITHUB_WORKSPACE 'upstream') --apply
+      - name: Typecheck the published 0.159.2 TypeScript SDK
+        run: |
+          npm ci --prefix tools/sdk --omit=optional --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'SDK dependency installation failed' }
+          npm run typecheck --prefix tools/sdk
+          if ($LASTEXITCODE -ne 0) { throw 'SDK typecheck failed' }
       - name: Check PowerShell and JavaScript syntax
         run: ./tools/check-scripts.ps1
 

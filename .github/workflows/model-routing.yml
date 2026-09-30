@@ -33,10 +33,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'fetch failed' }
           git -c core.autocrlf=false -C upstream checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
-      - name: Preflight and apply the four 0.159 patches in shared order
-        run: |
-          node tools/binding-patches.mjs --engine (Join-Path $env:GITHUB_WORKSPACE 'upstream') --combined --apply
-          if ($LASTEXITCODE -ne 0) { throw 'combined patch application failed' }
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: upstream/codex-rs -> target
@@ -44,9 +40,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-nextest
-      - name: Build the combined debug CLI once
-        working-directory: upstream/codex-rs
-        run: cargo build -p codex-cli --bin codex
+      - name: Install the default four-patch debug CLI once
+        run: ./tools/install-engine.ps1 -EnginePath (Join-Path $env:GITHUB_WORKSPACE 'upstream')
       - name: Focused core binding and parent delivery tests
         working-directory: upstream
         run: >-
