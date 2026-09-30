@@ -20,6 +20,8 @@
 复用唯一 E:\Projects\codex/codex-rs/target/debug/codex.exe、现有 TS tools/sdk/node_modules
 与 Python work/python-sdk/Scripts/python.exe。每次先核验 #31 冻结源码/index/patch/lock/binary，
 不会重新编译。不能用 stock SDK runtime 或旧 binary 通过验收。
+若本机执行策略阻止直接运行ps1，用 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/test-glm.ps1`
+加相同参数；这只影响该进程，不修改全局执行策略。
 
 ## 明确开启真实模式
 
@@ -121,4 +123,14 @@ work/python-sdk/Scripts/python.exe -m mypy --strict --cache-dir work/mypy-cache 
 - 改引擎/版本/model契约时先更新真实冻结证据与SDK pins，不加跳过指纹的捷径。
 
 完整冻结交付见 [Windows交付](windows-delivery-0.159.md)。
+
+## 本次实现验证（2026-09-30）
+
+- 代码基线：`f661e28e90d4c57ab23a0333e14114d4e8210f27`，验收代码包含至`48d9393`。
+- 新入口/失败保护及受共享环境变更影响的initialize/TS SDK：23/23通过，零失败/取消/跳过，84.782s。
+- Coding Plan与payg分别完成6个mock项目，每种10次loopback Responses请求；均`matrixComplete=true`、
+  `remoteRequests=0`、`liveCompatibility=unverified`，两种身份不混用结果。
+- TypeScript typecheck、Python strict mypy（适配器1文件）、脚本语法、whitespace检查通过。
+- Standards判断意见2项及Spec问题4项均修正；错turn、重复completion、completed后异常通知都有失败负例。
+- 没有Cargo构建、没有新引擎/worktree、没有真实模型请求；#17/#18在线仍未完成。
 
