@@ -8,6 +8,8 @@ let marker;
 function finish(id, text) {
   emit({ method: 'item/agentMessage/delta', params: { threadId: 'thread-fixture', turnId: id, delta: text } });
   emit({ method: 'turn/completed', params: { threadId: 'thread-fixture', turn: { id, status: 'completed' } } });
+  if (scenario === 'duplicate-completion') emit({ method: 'turn/completed', params: { threadId: 'thread-fixture', turn: { id, status: 'completed' } } });
+  if (scenario === 'after-completed') emit({ method: 'item/agentMessage/delta', params: { threadId: 'thread-fixture', turnId: 'stale-turn', delta: 'extra' } });
 }
 readline.createInterface({ input: process.stdin }).on('line', line => {
   const message = JSON.parse(line);

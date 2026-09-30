@@ -173,7 +173,7 @@ test('inconsistent service function call IDs fail before a tool continuation can
 });
 
 test('the RPC command rejects wrong-turn tool requests and stale same-thread completions', () => {
-  for (const scenario of ['wrong-tool-turn', 'wrong-completion']) {
+  for (const scenario of ['wrong-tool-turn', 'wrong-completion', 'duplicate-completion', 'after-completed']) {
     const home = mkdtempSync(path.resolve('work/rpc-fault-'));
     mkdirSync(path.join(home, 'workspace'));
     copyFileSync('tools/glm-acceptance/rpc-fixture.cjs', path.join(home, 'workspace/app-server'));

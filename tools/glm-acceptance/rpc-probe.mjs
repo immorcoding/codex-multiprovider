@@ -14,6 +14,11 @@ const called = new Set(), started = new Set(), completed = new Set();
 const marker = 'probe-' + randomBytes(8).toString('hex');
 let seq = 0, active = null, threadId;
 const finishedTurns = new Set();
+let protocolFailure;
+function rejectProtocol(message) {
+  protocolFailure ??= new Error(message);
+  active?.reject(protocolFailure);
+}
 const send = m => child.stdin.write(JSON.stringify(m) + '\n');
 function fail() {
   for (const p of pending.values()) p.reject(new Error('RPC/transport failure'));
@@ -28,18 +33,18 @@ function handleTurnMessage(m) {
     if (m.method !== 'item/tool/call' || p.tool !== 'acceptance_echo' ||
         p.threadId !== threadId || p.turnId !== active?.turnId || !p.callId || called.has(p.callId) || called.size >= 1) {
       send({id:m.id,error:{code:-32601,message:'Unexpected/duplicate tool request'}});
-      active?.reject(new Error('Unexpected/duplicate tool request')); return;
+      rejectProtocol('Unexpected/duplicate tool request'); return;
     }
     called.add(p.callId);
     send({id:m.id,result:{contentItems:[{type:'inputText',text:marker}],success:true}});
     return;
   }
   const p = m.params ?? {};
-  if (!active || p.threadId !== threadId) return;
+  if (p.threadId !== threadId) return;
   if (!['item/agentMessage/delta', 'item/started', 'item/completed', 'turn/completed'].includes(m.method)) return;
   const observedTurn = m.method === 'turn/completed' ? p.turn?.id : p.turnId;
-  if (observedTurn !== active.turnId || finishedTurns.has(observedTurn)) {
-    active.reject(new Error('Wrong or stale turn')); return;
+  if (!active || observedTurn !== active.turnId || finishedTurns.has(observedTurn)) {
+    rejectProtocol('Wrong, duplicate or stale turn'); return;
   }
   if (m.method === 'item/agentMessage/delta') {
     active.delta += 1; active.text += p.delta ?? '';
@@ -47,7 +52,7 @@ function handleTurnMessage(m) {
   if (m.method === 'item/started' && p.item?.type === 'dynamicToolCall') started.add(p.item.id);
   if (m.method === 'item/completed' && p.item?.type === 'dynamicToolCall') {
     if (p.item.success !== true || p.item.status !== 'completed') {
-      active.reject(new Error('Tool result failed')); return;
+      rejectProtocol('Tool result failed'); return;
     }
     completed.add(p.item.id);
   }
@@ -56,7 +61,7 @@ function handleTurnMessage(m) {
   if (m.method === 'turn/completed') {
     finishedTurns.add(observedTurn);
     active.completed += 1;
-    if (p.turn?.status !== 'completed') active.reject(new Error('Turn not completed'));
+    if (p.turn?.status !== 'completed') rejectProtocol('Turn not completed');
     else active.resolve({text:active.text,delta:active.delta});
   }
 }
@@ -68,7 +73,8 @@ readline.createInterface({input:child.stdout}).on('line', line => {
     if (m.error) { p.reject(new Error('RPC_FAILED')); return; }
     if (p.method === 'turn/start') {
       if (!active || typeof m.result?.turn?.id !== 'string' || finishedTurns.has(m.result.turn.id)) {
-        p.reject(new Error('Missing/reused turn ID')); return;
+        rejectProtocol('Missing/reused turn ID');
+        p.reject(protocolFailure); return;
       }
       active.turnId = m.result.turn.id;
       for (const buffered of active.buffer.splice(0)) handleTurnMessage(buffered);
@@ -83,6 +89,7 @@ function rpc(method, params) {
   return new Promise((resolve,reject) => {pending.set(id,{method,resolve,reject});send({id,method,params});});
 }
 async function turn(prompt) {
+  if (protocolFailure) throw protocolFailure;
   let timer;
   const done = new Promise((resolve,reject) => {
     active = {resolve,reject,text:'',delta:0,completed:0,buffer:[],turnId:null};
@@ -93,6 +100,7 @@ async function turn(prompt) {
   try {
     await Promise.race([rpc('turn/start',{threadId,input:[{type:'text',text:prompt,textElements:[]}],effort:'low'}),done]);
     const result = await done;
+    if (protocolFailure) throw protocolFailure;
     assert.equal(active.completed, 1);
     return result;
   } finally {clearTimeout(timer);active = null;}
@@ -117,6 +125,7 @@ try {
   const second = await turn('Without using any tool, output the marker from the previous tool result followed by :ACK2.');
   assert.ok(second.text.includes(marker) && second.text.includes(':ACK2'));
   assert.equal(called.size,1);
+  if (protocolFailure) throw protocolFailure;
   console.log(JSON.stringify({probe:'tool-call-and-second-turn',provider,model:'glm-5.3-flash',
     initialize:true,streamDeltaBeforeCompletion:true,callIdBound:true,toolCalls:1,
     toolResultUsed:true,secondTurn:true,pass:true}));
