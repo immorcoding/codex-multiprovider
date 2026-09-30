@@ -11,8 +11,23 @@
 让 Codex 桌面端的选择器也能列出第二家供应商（默认 DeepSeek）的模型，并让每个会话固定在它启动时的
 供应商上。桌面客户端不做任何修改。
 
+当前交付基线为 **Windows x64、Codex 0.159.2**，tag `rust-v0.159.2`，源码 SHA
+`ff6aec96948b70d94983af2641a6b67c94faeff5`。CLI、TypeScript SDK、Python SDK 与 Python
+runtime 的发布版本均为 `0.159.2`；源码占位版本不能当作发布版本。复用已有 `E:\Projects\codex`，
+只验证源码、不编译：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
+```
+
+新版 `-CombinedPatch` 入口在 [#29](https://github.com/immorcoding/codex-multiprovider/issues/29)/
+[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) 迁移补丁前明确拒绝执行。
+PR CI 只跑 Windows 轻量检查，重型 Rust 验证仅手动触发。详见[冻结基线与交接](docs/engine-baseline.md)。
+下文 0.158/0.154 的行为与安装说明均为各自固定 SHA 的历史证据，不代表 0.159 已兼容；
+SDK 测试依赖仍保留历史 0.158 pin，由 #32/#33 升级验证。
+
 [#8](https://github.com/immorcoding/codex-multiprovider/issues/8) 与
-[#9](https://github.com/immorcoding/codex-multiprovider/issues/9) 的新版 **0.158.0 路由与会话绑定**补丁为
+[#9](https://github.com/immorcoding/codex-multiprovider/issues/9) 的历史 **0.158.0 路由与会话绑定**补丁为
 `patch/model-provider-routes-0.158.patch`。在干净的 `rust-v0.158.0` checkout 上执行
 `powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1 -RoutingPatch -EnginePath C:\path\to\codex -Profile debug`。
 它使 `thread/start` 与 `codex exec` 按 `[model_provider_routes]` 选择供应商，明确拒绝显式冲突

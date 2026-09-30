@@ -11,7 +11,22 @@
 Adds a second model provider (DeepSeek by default) to the Codex desktop model picker, and pins every
 session to the provider it starts on. The desktop client is not modified.
 
-The **0.158.0 routing and session-binding** patch for [#8](https://github.com/immorcoding/codex-multiprovider/issues/8)
+The current delivery baseline is **Windows x64, Codex 0.159.2**, tag `rust-v0.159.2`,
+source `ff6aec96948b70d94983af2641a6b67c94faeff5`. CLI, TypeScript SDK, Python SDK and Python
+runtime release versions are all `0.159.2`; source placeholder versions are not release versions.
+Reuse the existing `E:\Projects\codex` checkout and verify it without compiling:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
+```
+
+The new `-CombinedPatch` entry is blocked until [#29](https://github.com/immorcoding/codex-multiprovider/issues/29)/
+[#30](https://github.com/immorcoding/codex-multiprovider/issues/30) migrate the patches. PR CI runs Windows lightweight checks;
+heavy Rust validation is manual only. See [the frozen baseline and handoff](docs/engine-baseline.md).
+All 0.158/0.154 behavior and setup below are historical evidence for their respective pinned SHAs;
+they do not establish 0.159 compatibility. The historical SDK test dependencies remain 0.158 until #32/#33.
+
+The **historical 0.158.0 routing and session-binding** patch for [#8](https://github.com/immorcoding/codex-multiprovider/issues/8)
 and [#9](https://github.com/immorcoding/codex-multiprovider/issues/9)
 is `patch/model-provider-routes-0.158.patch`. Build it from a clean `rust-v0.158.0` checkout with
 `powershell -ExecutionPolicy Bypass -File tools\install-engine.ps1 -RoutingPatch -EnginePath C:\path\to\codex -Profile debug`. It routes

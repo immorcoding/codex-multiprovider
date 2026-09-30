@@ -1,46 +1,32 @@
 <#
 .SYNOPSIS
-  Builds either the legacy patched engine or a clean pinned upstream baseline.
+  Verifies the frozen 0.159.2 source or builds an explicitly selected engine mode on Windows x64.
 
 .DESCRIPTION
-  One command, from nothing to a patched codex.exe. The script:
-
-    1. checks that the tools that cannot be installed for you are present (git, cargo);
-    2. clones openai/codex at the exact commit the patch was generated against, so the patch applies
-       cleanly instead of failing against a moved upstream;
-    3. applies patch\model-provider-routes.patch;
-    4. builds codex-rs with `cargo build -p codex-cli --bin codex`;
-    5. prints the path of the engine binary and the next steps.
-
-  Use -EnginePath to patch an existing checkout instead of cloning. The checkout must be at the
-  pinned commit and have no modified files.
-
-  With -BaselineOnly, the script pins the latest validated stable release without a patch.
-  With -RoutingPatch, it applies the model-routing and session-binding patch to that stable release. Neither
-  mode changes the legacy default installer path or the Microsoft Store desktop engine.
-
-  What it cannot do for you: Node.js and the compatibility proxy, the provider API key, and the
-  client launch configuration. Those live in the README; this script stops once the engine builds.
+  -BaselineOnly -VerifyOnly checks the pinned SHA and clean state without Rust or patches.
+  -BaselineOnly without -VerifyOnly builds stock upstream; it requires an existing -EnginePath.
+  -CombinedPatch is reserved for 0.159.2 and rejects execution until #29/#30 finish migration.
+  -RoutingPatch is the historical 0.158 single routing patch mode. The default remains the
+  historical 0.154 patch mode. Historical modes reject new source and may clone under -WorkDir.
+  Existing checkouts are never switched or reset. No Microsoft Store client files are modified.
 
 .PARAMETER EnginePath
-  Existing upstream checkout to patch. Omit to clone a fresh one under -WorkDir.
-
+  Existing checkout at the selected mode's exact SHA. Required for the new stable baseline.
 .PARAMETER WorkDir
-  Where to clone the engine when -EnginePath is not given. Defaults to .\codex-engine.
-
+  Clone destination for historical modes only.
 .PARAMETER Profile
-  Cargo profile to build. Defaults to release because that is what the client should run.
-
+  Cargo profile (release or debug); default release preserves historical installer behavior.
+  This round uses -VerifyOnly, then a single combined debug build in #31/#16.
 .PARAMETER BaselineOnly
-  Build the pinned stable upstream engine without applying this repository's older patch. This is
-  for validating the new baseline while the provider-routing patch is being ported separately.
-
+  Select frozen 0.159.2 source without any patches.
+.PARAMETER VerifyOnly
+  With -BaselineOnly, verify source and return before any Rust checks or build.
 .PARAMETER RoutingPatch
-  Build the stable 0.158.0 engine with the model-provider routing and session-binding patch from issues #8/#9.
-
+  Historical 0.158 routing and session-binding patch (#8/#9), not the full combination.
+.PARAMETER CombinedPatch
+  New 0.159.2 combined installation entry, blocked until patch migration is complete.
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File install-engine.ps1
-  powershell -ExecutionPolicy Bypass -File install-engine.ps1 -EnginePath C:\src\codex
+  powershell -NoProfile -ExecutionPolicy Bypass -File install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
 #>
 param(
     [string]$EnginePath,
@@ -48,20 +34,32 @@ param(
     [ValidateSet('release', 'debug')]
     [string]$Profile = 'release',
     [switch]$BaselineOnly,
-    [switch]$RoutingPatch
+    [switch]$RoutingPatch,
+    [switch]$CombinedPatch,
+    [switch]$VerifyOnly
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-# The upstream commit this patch was generated against. Keep in sync with README.md and
-# .github/workflows/patch-applies.yml; the script verifies the checkout matches before patching.
+# Historical patch pins stay separate from the current machine-readable release baseline.
+# Every mode verifies the exact source before modifying the checkout.
 $LegacyPatchSha = '1715e55076737158ba61d43158ede504de6d4ce1'
-$StableBaselineSha = '064c6b8c737f5b41d171fdda80bd9ef10ad06eb3'
-if ($BaselineOnly -and $RoutingPatch) {
-    throw '-BaselineOnly and -RoutingPatch cannot be combined.'
+$HistoricalRoutingSha = '064c6b8c737f5b41d171fdda80bd9ef10ad06eb3'
+$Baseline = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\config\engine-baseline.json') | ConvertFrom-Json
+if (@($BaselineOnly, $RoutingPatch, $CombinedPatch).Where({ $_ }).Count -gt 1) {
+    throw '-BaselineOnly, -RoutingPatch and -CombinedPatch cannot be combined.'
 }
-$PinnedSha = if ($BaselineOnly -or $RoutingPatch) { $StableBaselineSha } else { $LegacyPatchSha }
+if ($CombinedPatch) {
+    throw 'The 0.159.2 combined patches are not migrated yet (#29/#30). No old 0.158 or 0.154 patch will be applied. Use -BaselineOnly -VerifyOnly to verify the frozen source.'
+}
+if ($VerifyOnly -and -not $BaselineOnly) {
+    throw '-VerifyOnly requires -BaselineOnly.'
+}
+if ($BaselineOnly -and (-not $EnginePath -or $WorkDir)) {
+    throw '-BaselineOnly requires -EnginePath to the existing checkout; it does not clone another engine or accept -WorkDir.'
+}
+$PinnedSha = if ($BaselineOnly) { $Baseline.sourceSha } elseif ($RoutingPatch) { $HistoricalRoutingSha } else { $LegacyPatchSha }
 $UpstreamUrl = 'https://github.com/openai/codex.git'
 $PatchPath = if ($RoutingPatch) {
     Join-Path $PSScriptRoot '..\patch\model-provider-routes-0.158.patch'
@@ -104,17 +102,6 @@ function Invoke-Git {
 
 Write-Step 'Checking the tools this script cannot install for you'
 Test-Tool -Name 'git' -InstallHint 'Install Git from https://git-scm.com/download/win.'
-Test-Tool -Name 'cargo' -InstallHint 'Install Rust from https://rustup.rs, then reopen this shell so PATH is refreshed.'
-Test-Tool -Name 'rustc' -InstallHint 'Install Rust from https://rustup.rs, then reopen this shell so PATH is refreshed.'
-# `rustc --version` prints only "rustc <version> (<sha> <date>)" and never names the platform, so the
-# host triple has to come from -vV. Checking --version for "msvc" warns on every correct toolchain.
-$rustcVerbose = ((& rustc -vV) 2>&1) -join "`n"
-$rustcVersion = [regex]::Match($rustcVerbose, '(?m)^release:\s*(.+)$').Groups[1].Value.Trim()
-$hostTriple = [regex]::Match($rustcVerbose, '(?m)^host:\s*(.+)$').Groups[1].Value.Trim()
-Write-Note "rustc: $rustcVersion (host $hostTriple)"
-if ($hostTriple -notmatch 'msvc') {
-    throw "this toolchain targets '$hostTriple', but the engine has to be built for a Windows MSVC target. Install the MSVC toolchain with: rustup default stable-msvc"
-}
 
 if (-not $BaselineOnly -and -not (Test-Path -LiteralPath $PatchPath)) {
     throw "patch not found at $PatchPath. Run this script from inside the repository checkout."
@@ -141,23 +128,37 @@ if (-not $EnginePath) {
 } else {
     $EnginePath = (Resolve-Path -LiteralPath $EnginePath).Path
     Write-Step "Using the existing checkout at $EnginePath"
-    if (-not (Test-Path -LiteralPath (Join-Path $EnginePath 'codex-rs\Cargo.toml'))) {
-        throw "$EnginePath does not look like the Codex repository (codex-rs\Cargo.toml is missing)."
-    }
 }
 
 Write-Step 'Verifying the checkout is the commit the patch expects'
-$actualSha = (& git -C $EnginePath rev-parse HEAD).Trim()
+$headOutput = Invoke-Git -What 'reading HEAD' -Arguments @('-C', $EnginePath, 'rev-parse', 'HEAD')
+$actualSha = ($headOutput -join "`n").Trim()
 if ($actualSha -ne $PinnedSha) {
     throw "checked out $actualSha but this build needs $PinnedSha. Use a clean checkout at the pinned commit."
 }
 Write-Ok "HEAD is $PinnedSha"
 
-$dirty = @(& git -C $EnginePath status --porcelain)
+$dirty = @(Invoke-Git -What 'checking source status' -Arguments @('-C', $EnginePath, 'status', '--porcelain'))
 if ($dirty.Count -gt 0) {
     throw 'the checkout has uncommitted changes. Commit or discard them first, so this script cannot overwrite your work.'
 }
 Write-Ok 'the checkout is clean'
+
+if (-not (Test-Path -LiteralPath (Join-Path $EnginePath 'codex-rs\Cargo.toml'))) {
+    throw "$EnginePath does not look like the Codex repository (codex-rs\Cargo.toml is missing)."
+}
+if ($VerifyOnly) {
+    Write-Ok "Verified without patching or compiling: $($Baseline.tag), $PinnedSha, $($Baseline.platform)."
+    return
+}
+
+Test-Tool -Name 'cargo' -InstallHint 'Install Rust from https://rustup.rs, then reopen this shell so PATH is refreshed.'
+Test-Tool -Name 'rustc' -InstallHint 'Install Rust from https://rustup.rs, then reopen this shell so PATH is refreshed.'
+$rustcVerbose = ((& rustc -vV) 2>&1) -join "`n"
+$hostTriple = [regex]::Match($rustcVerbose, '(?m)^host:\s*(.+)$').Groups[1].Value.Trim()
+if ($LASTEXITCODE -ne 0 -or $hostTriple -ne 'x86_64-pc-windows-msvc') {
+    throw "this delivery requires the Windows x64 MSVC toolchain, found '$hostTriple'. Install it with: rustup default stable-msvc"
+}
 
 if ($BaselineOnly) {
     Write-Step 'Building the unpatched stable baseline'
@@ -175,7 +176,7 @@ if ($BaselineOnly) {
 }
 
 Write-Step "Building the engine (-p codex-cli --bin codex, profile $Profile)"
-Write-Note 'the first build downloads and compiles the whole Rust workspace and takes a while'
+Write-Note 'the first build downloads and compiles the CLI and its dependencies and takes a while'
 $cargoArguments = @('build', '-p', 'codex-cli', '--bin', 'codex')
 if ($Profile -eq 'release') { $cargoArguments += '--release' }
 # The release tag's workspace version can differ from the checked-in lockfile's local package
