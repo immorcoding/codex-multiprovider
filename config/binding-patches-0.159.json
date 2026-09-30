@@ -1,5 +1,6 @@
 [
   "patch/model-provider-routes-0.159.patch",
   "patch/fork-provider-binding-0.159.patch",
-  "patch/subagent-provider-binding-0.159.patch"
+  "patch/subagent-provider-binding-0.159.patch",
+  "patch/parent-completion-0.159.patch"
 ]

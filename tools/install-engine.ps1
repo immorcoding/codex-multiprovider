@@ -5,7 +5,7 @@
 .DESCRIPTION
   -BaselineOnly -VerifyOnly checks the pinned SHA and clean state without Rust or patches.
   -BaselineOnly without -VerifyOnly builds stock upstream; it requires an existing -EnginePath.
-  -CombinedPatch is reserved for 0.159.2 and rejects execution until #29/#30 finish migration.
+  -CombinedPatch verifies/applies four 0.159 patches, then builds one debug CLI.
   -BindingPatchesOnly verifies/applies the three 0.159 binding diffs without compiling.
   Add -VerifyOnly to leave working source unchanged (checks use a temporary Git index).
   -RoutingPatch is the historical 0.158 single routing patch mode. The default remains the
@@ -22,13 +22,14 @@
 .PARAMETER BaselineOnly
   Select frozen 0.159.2 source without any patches.
 .PARAMETER VerifyOnly
-  With -BaselineOnly or -BindingPatchesOnly, verify and return without a Rust build.
+  With -BaselineOnly, -BindingPatchesOnly or -CombinedPatch, return without a Rust build.
 .PARAMETER BindingPatchesOnly
   Check/apply the three 0.159 binding patches in order; never builds a partial CLI.
 .PARAMETER RoutingPatch
   Historical 0.158 routing and session-binding patch (#8/#9), not the full combination.
 .PARAMETER CombinedPatch
-  New 0.159.2 combined installation entry, blocked until patch migration is complete.
+  Four 0.159.2 patches in the shared order; default debug profile. VerifyOnly uses HEAD,
+  even with dirty source, and never modifies the real index or working files.
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
 #>
@@ -55,16 +56,14 @@ $Baseline = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '..\config\en
 if (@($BaselineOnly, $RoutingPatch, $CombinedPatch, $BindingPatchesOnly).Where({ $_ }).Count -gt 1) {
     throw '-BaselineOnly, -RoutingPatch, -CombinedPatch and -BindingPatchesOnly cannot be combined.'
 }
-if ($CombinedPatch) {
-    throw 'The 0.159.2 combined patches are not migrated yet (#29/#30). No old 0.158 or 0.154 patch will be applied. Use -BaselineOnly -VerifyOnly to verify the frozen source.'
+if ($CombinedPatch -and -not $PSBoundParameters.ContainsKey('Profile')) { $Profile = 'debug' }
+if ($VerifyOnly -and -not ($BaselineOnly -or $BindingPatchesOnly -or $CombinedPatch)) {
+    throw '-VerifyOnly requires -BaselineOnly, -BindingPatchesOnly or -CombinedPatch.'
 }
-if ($VerifyOnly -and -not ($BaselineOnly -or $BindingPatchesOnly)) {
-    throw '-VerifyOnly requires -BaselineOnly or -BindingPatchesOnly.'
-}
-if (($BaselineOnly -or $BindingPatchesOnly) -and (-not $EnginePath -or $WorkDir)) {
+if (($BaselineOnly -or $BindingPatchesOnly -or $CombinedPatch) -and (-not $EnginePath -or $WorkDir)) {
     throw 'Stable modes require -EnginePath to the existing checkout; they do not clone another engine or accept -WorkDir.'
 }
-$PinnedSha = if ($BaselineOnly -or $BindingPatchesOnly) { $Baseline.sourceSha } elseif ($RoutingPatch) { $HistoricalRoutingSha } else { $LegacyPatchSha }
+$PinnedSha = if ($BaselineOnly -or $BindingPatchesOnly -or $CombinedPatch) { $Baseline.sourceSha } elseif ($RoutingPatch) { $HistoricalRoutingSha } else { $LegacyPatchSha }
 $UpstreamUrl = 'https://github.com/openai/codex.git'
 $PatchPath = if ($RoutingPatch) {
     Join-Path $PSScriptRoot '..\patch\model-provider-routes-0.158.patch'
@@ -108,10 +107,10 @@ function Invoke-Git {
 Write-Step 'Checking the tools this script cannot install for you'
 Test-Tool -Name 'git' -InstallHint 'Install Git from https://git-scm.com/download/win.'
 
-if (-not ($BaselineOnly -or $BindingPatchesOnly) -and -not (Test-Path -LiteralPath $PatchPath)) {
+if (-not ($BaselineOnly -or $BindingPatchesOnly -or $CombinedPatch) -and -not (Test-Path -LiteralPath $PatchPath)) {
     throw "patch not found at $PatchPath. Run this script from inside the repository checkout."
 }
-if ($BaselineOnly -or $BindingPatchesOnly) {
+if ($BaselineOnly -or $BindingPatchesOnly -or $CombinedPatch) {
     Write-Note "stable source: $PinnedSha"
 } else {
     Write-Note "patch: $((Resolve-Path -LiteralPath $PatchPath).Path)"
@@ -144,6 +143,15 @@ if ($actualSha -ne $PinnedSha) {
 Write-Ok "HEAD is $PinnedSha"
 
 $dirty = @(Invoke-Git -What 'checking source status' -Arguments @('-C', $EnginePath, 'status', '--porcelain'))
+if (($BindingPatchesOnly -or $CombinedPatch) -and $VerifyOnly) {
+    Test-Tool -Name 'node' -InstallHint 'Install Node.js 22 or newer.'
+    $verifyArguments = @((Join-Path $PSScriptRoot 'binding-patches.mjs'), '--engine', $EnginePath)
+    if ($CombinedPatch) { $verifyArguments += '--combined' }
+    & node @verifyArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Patch verification failed.' }
+    Write-Note 'HEAD applicability only; working source is unchanged and is not verified. Combined runtime validation waits for #31.'
+    return
+}
 if ($dirty.Count -gt 0) {
     throw 'the checkout has uncommitted changes. Commit or discard them first, so this script cannot overwrite your work.'
 }
@@ -176,6 +184,10 @@ if ($LASTEXITCODE -ne 0 -or $hostTriple -ne 'x86_64-pc-windows-msvc') {
 
 if ($BaselineOnly) {
     Write-Step 'Building the unpatched stable baseline'
+} elseif ($CombinedPatch) {
+    Test-Tool -Name 'node' -InstallHint 'Install Node.js 22 or newer.'
+    & node (Join-Path $PSScriptRoot 'binding-patches.mjs') --engine $EnginePath --combined --apply
+    if ($LASTEXITCODE -ne 0) { throw 'Combined patch preflight/application failed.' }
 } else {
     Write-Step 'Applying the patch'
     # --check first, so a mismatch is reported before anything is touched. git talks progress on stderr,

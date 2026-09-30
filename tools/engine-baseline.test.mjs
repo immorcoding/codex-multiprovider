@@ -21,9 +21,16 @@ function install(...args) {
   return run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer, ...args]);
 }
 
-test('a clean frozen source can be verified without applying patches or building Rust', () => {
+test('baseline verification accepts clean source and rejects the shared patched source without building', () => {
   assert.ok(checkout, 'Set CODEX_TEST_UPSTREAM_CHECKOUT to the existing clean rust-v0.159.2 checkout');
+  const before = run('git', ['-C', checkout, 'status', '--porcelain']).stdout;
   const result = install('-BaselineOnly', '-VerifyOnly', '-EnginePath', checkout);
+  assert.equal(run('git', ['-C', checkout, 'status', '--porcelain']).stdout, before);
+  if (before.trim()) {
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /uncommitted changes/);
+    return;
+  }
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.ok(result.stdout.includes(expectedSha));
   assert.match(result.stdout, /Verified without patching or compiling/);
@@ -59,19 +66,22 @@ test('baseline verification rejects another commit without checking out or modif
 
 test('historical installers reject 0.159 source without applying old diffs', () => {
   assert.ok(checkout);
+  const before = run('git', ['-C', checkout, 'status', '--porcelain']).stdout;
   for (const args of [[], ['-RoutingPatch']]) {
     const result = install(...args, '-EnginePath', checkout);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /checked out .* but this build needs/);
-    assert.equal(run('git', ['-C', checkout, 'status', '--porcelain']).stdout.trim(), '');
+    assert.equal(run('git', ['-C', checkout, 'status', '--porcelain']).stdout, before);
   }
 });
 
-test('the new combined entry fails clearly until the 0.159 patch migration is complete', () => {
+test('combined installation rejects dirty source without discarding patches or compiling', () => {
+  const before = run('git', ['-C', checkout, 'status', '--porcelain']).stdout;
+  if (!before.trim()) return; // Clean apply is covered by the Windows lightweight workflow.
   const result = install('-CombinedPatch', '-EnginePath', checkout);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /0\.159\.2 combined patches are not migrated yet/);
-  assert.equal(run('git', ['-C', checkout, 'status', '--porcelain']).stdout.trim(), '');
+  assert.match(result.stderr, /uncommitted changes/);
+  assert.equal(run('git', ['-C', checkout, 'status', '--porcelain']).stdout, before);
 });
 
 test('stable modes require an existing checkout and unambiguous options', () => {
@@ -84,6 +94,8 @@ test('stable modes require an existing checkout and unambiguous options', () => 
     ['-BindingPatchesOnly', '-WorkDir', 'unused-engine', '-EnginePath', checkout],
     ['-BindingPatchesOnly', '-CombinedPatch', '-EnginePath', checkout],
     ['-BindingPatchesOnly', '-RoutingPatch', '-EnginePath', checkout],
+    ['-CombinedPatch'],
+    ['-CombinedPatch', '-WorkDir', 'unused-engine', '-EnginePath', checkout],
     ['-VerifyOnly', '-EnginePath', checkout],
   ]) {
     const result = install(...args);
