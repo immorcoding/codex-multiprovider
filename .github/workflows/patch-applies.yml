@@ -33,7 +33,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'remote add failed' }
           git -C upstream fetch --depth 1 origin $baseline.sourceSha
           if ($LASTEXITCODE -ne 0) { throw 'fetch failed' }
-          git -C upstream checkout --detach FETCH_HEAD
+          git -c core.autocrlf=false -C upstream checkout --detach FETCH_HEAD
           if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
       - name: Verify release pins and installer rejection conditions without compiling
         run: |
@@ -61,7 +61,7 @@ jobs:
           git init upstream
           git -C upstream remote add origin https://github.com/openai/codex.git
           git -C upstream fetch --depth 1 origin "$PIN_SHA"
-          git -C upstream checkout --detach FETCH_HEAD
+          git -c core.autocrlf=false -C upstream checkout --detach FETCH_HEAD
           test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
           test -f upstream/codex-rs/Cargo.toml
           test -f upstream/codex-rs/core/src/config/mod.rs
@@ -90,7 +90,7 @@ jobs:
           git init upstream
           git -C upstream remote add origin https://github.com/openai/codex.git
           git -C upstream fetch --depth 1 origin "$PIN_SHA"
-          git -C upstream checkout --detach FETCH_HEAD
+          git -c core.autocrlf=false -C upstream checkout --detach FETCH_HEAD
           test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
           test -f upstream/codex-rs/Cargo.toml
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"

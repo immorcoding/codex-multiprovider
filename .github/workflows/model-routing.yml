@@ -28,7 +28,7 @@ jobs:
           git init upstream
           git -C upstream remote add origin https://github.com/openai/codex.git
           git -C upstream fetch --depth 1 origin "$PIN_SHA"
-          git -C upstream checkout --detach FETCH_HEAD
+          git -c core.autocrlf=false -C upstream checkout --detach FETCH_HEAD
           test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
           test -z "$(git -C upstream status --porcelain)"
       - name: Apply routing, session, fork, subagent, and parent-completion patches
