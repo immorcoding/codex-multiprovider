@@ -1,15 +1,39 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { before } from 'node:test';
 import { Codex } from '@openai/codex-sdk';
+import { isolatedCliEnv } from './isolated-cli-env.mjs';
 
 const binary = process.env.CODEX_TEST_ROUTED_BINARY;
 const fakeKey = 'sdk-fixture-key-must-not-leak';
 const configFile = new URL('../../config/zai-coding-plan.config-snippet.toml', import.meta.url);
 const catalogFile = new URL('../../config/zai-models.json', import.meta.url);
+const baseline = JSON.parse(readFileSync(new URL('../../config/engine-baseline.json', import.meta.url), 'utf8'));
+const evidence = JSON.parse(readFileSync(new URL('../../docs/engine-validation-0.159.json', import.meta.url), 'utf8'));
+
+before(() => {
+  const expectedVersion = baseline.publishedVersions['@openai/codex-sdk'];
+  const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+  const lock = JSON.parse(readFileSync(new URL('./package-lock.json', import.meta.url), 'utf8'));
+  const installed = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@openai/codex-sdk')), 'utf8'));
+  assert.equal(manifest.dependencies['@openai/codex-sdk'], expectedVersion);
+  assert.equal(lock.packages[''].dependencies['@openai/codex-sdk'], expectedVersion);
+  assert.equal(lock.packages['node_modules/@openai/codex-sdk'].version, expectedVersion);
+  assert.equal(installed.version, expectedVersion, 'Install the frozen public SDK before running acceptance');
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the verified 0.159.2 patched CLI');
+  assert.equal(path.resolve(binary), path.resolve(evidence.binaryPath), 'Reuse the single verified engine binary');
+  assert.equal(createHash('sha256').update(readFileSync(binary)).digest('hex'), evidence.binarySha256,
+    'Patched CLI fingerprint differs from the #31 handoff; stop before starting a model turn');
+  for (const patch of evidence.patches) {
+    const bytes = readFileSync(new URL(`../../${patch.path}`, import.meta.url));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), patch.sha256, `Patch fingerprint differs: ${patch.path}`);
+  }
+});
 
 function message(text, id = 'mock-message') {
   return { id, type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] };
@@ -31,9 +55,10 @@ function sendEvents(response, events) {
 }
 
 async function fixture(run) {
-  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the 0.158.0 patched CLI');
+  assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the verified 0.159.2 patched CLI');
   const home = mkdtempSync(path.join(tmpdir(), 'codex-sdk-glm-home-'));
   const cwd = mkdtempSync(path.join(tmpdir(), 'codex-sdk-glm-cwd-'));
+  const env = isolatedCliEnv(home, fakeKey);
   const requests = [];
   let reply = (_body, count) => ({ events: responseEvents(`GLM SDK reply ${count}`, `r${count}`) });
   let held = null;
@@ -62,10 +87,14 @@ async function fixture(run) {
   writeFileSync(path.join(home, 'config.toml'), `model_catalog_json = ${JSON.stringify(catalogPath.replaceAll('\\', '\\\\'))}\n${config}`);
   const codex = new Codex({
     codexPathOverride: binary,
-    env: Object.fromEntries(Object.entries({ ...process.env, CODEX_HOME: home, ZAI_CODING_PLAN_API_KEY: fakeKey }).filter(([, value]) => value !== undefined)),
+    env,
   });
   const options = { model: 'glm-5.3-flash', workingDirectory: cwd, skipGitRepoCheck: true, approvalPolicy: 'never', sandboxMode: 'read-only' };
   try {
+    const version = spawnSync(binary, ['--version'], { env, encoding: 'utf8', timeout: 10_000, windowsHide: true });
+    assert.ifError(version.error);
+    assert.equal(version.status, 0, version.stderr);
+    assert.equal(version.stdout.trim(), evidence.version);
     await run({ codex, options, requests, setReply: (next) => { reply = next; }, finishHeld: (events = []) => {
       assert.ok(held, 'mock response must be held open');
       sendEvents(held, events);

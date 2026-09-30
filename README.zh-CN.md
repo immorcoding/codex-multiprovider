@@ -30,7 +30,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -Ba
 复用前核对[修复后的源码/补丁/产物指纹及验收结果](docs/glm-responses-validation-0.159.md)。
 PR CI 只跑 Windows 轻量检查，重型 Rust 验证仅手动触发。详见[冻结基线与交接](docs/engine-baseline.md)。
 下文 0.158/0.154 的行为与安装说明均为各自固定 SHA 的历史证据，不代表 0.159 已兼容；
-SDK 测试依赖仍保留历史 0.158 pin，由 #32/#33 升级验证。
+TypeScript SDK 0.159.2 已在 #32 通过离线验收，Python SDK 测试依赖仍保留历史 0.158 pin，待 #33 验证。
 
 [#8](https://github.com/immorcoding/codex-multiprovider/issues/8) 与
 [#9](https://github.com/immorcoding/codex-multiprovider/issues/9) 的历史 **0.158.0 路由与会话绑定**补丁为
@@ -72,21 +72,24 @@ SDK 测试依赖仍保留历史 0.158 pin，由 #32/#33 升级验证。
 
 ### TypeScript SDK 调用补丁 CLI（仅离线 mock）
 
-[#14](https://github.com/immorcoding/codex-multiprovider/issues/14) 使用公开的
-`@openai/codex-sdk@0.158.0`，通过 `codexPathOverride` 明确指向固定上游 SHA
-`064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` 加上述四份补丁构建的 CLI，
-不会误用 SDK 默认查找的 stock npm 平台包，也未修改 SDK 源码或已安装的 CLI。
-测试使用临时 `CODEX_HOME`、假 key 和本地 Responses mock：
+[#32](https://github.com/immorcoding/codex-multiprovider/issues/32) 使用公开的
+`@openai/codex-sdk@0.159.2`，通过 `codexPathOverride` 明确指向固定上游 SHA
+`ff6aec96948b70d94983af2641a6b67c94faeff5` 加四份 0.159 补丁构建的共享 CLI。
+测试在模型轮次开始前按 #31 交接校验已安装 SDK/lockfile 版本、binary 路径/SHA-256/版本
+与四补丁摘要，防止误用 stock npm 平台包；未修改 SDK 源码。
+临时 `CODEX_HOME` 与用户目录、假 key 和本地 Responses mock 隔离真实状态，
+不继承用户 API key、代理和 Codex 配置变量：
 
 ```powershell
-npm ci --prefix tools/sdk
-$env:CODEX_TEST_ROUTED_BINARY = 'C:\path\to\patched\codex.exe'
+npm ci --prefix tools/sdk --omit=optional --ignore-scripts --no-audit --no-fund
+$env:CODEX_TEST_ROUTED_BINARY = 'E:\Projects\codex\codex-rs\target\debug\codex.exe'
 npm run typecheck --prefix tools/sdk
 npm test --prefix tools/sdk
 ```
 
 测试经公开的 `startThread`、`runStreamed`、`resumeThread`、`run`、供应商错误和
-`AbortSignal` 取消路径确认 GLM 路由；不代表真实 Z.AI 在线兼容或凭据资格已验收。
+`AbortSignal` 取消路径确认 GLM 路由；详见[新版结果与准确指纹](docs/typescript-sdk-validation-0.159.md)。
+#14 的旧结论只对应 0.158.0。本票不代表真实 Z.AI 在线兼容或凭据资格已验收，普通按量身份和 #17/#18 仍未验证。
 
 | 选择器里选 | 该会话的供应商 |
 | --- | --- |
