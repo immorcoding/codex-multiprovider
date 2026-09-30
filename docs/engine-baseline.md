@@ -1,83 +1,74 @@
-# Codex 开源引擎基线（2026-09-28）
+# Codex 开源引擎冻结基线（2026-09-29）
 
-本项目移植补丁的目标是 GitHub 开源版，而非 Microsoft Store 安装的桌面端引擎。实施开始时复核的最新稳定 release 为 [`rust-v0.158.0`](https://github.com/openai/codex/releases/tag/rust-v0.158.0)，解引用到提交 `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`；CLI/workspace 版本为 `0.158.0`。安装脚本的 `-BaselineOnly` 构建未打补丁的原版引擎；`-RoutingPatch` 在相同干净基线上应用 #8 模型路由与 #9 会话供应商绑定补丁。默认安装入口仍绑定旧补丁的旧 SHA，旧功能并未在新基线上整体迁移。
+本轮仅交付 **Windows x64**，目标为 GitHub 开源引擎。冻结 tag 为
+[`rust-v0.159.2`](https://github.com/openai/codex/releases/tag/rust-v0.159.2)，
+解引用源码 SHA 为 `ff6aec96948b70d94983af2641a6b67c94faeff5`。
+机器可读记录在 [config/engine-baseline.json](../config/engine-baseline.json)，安装脚本和新版 CI 从同一记录读取 SHA。
 
-| 对应组件 | 在此基线复核到的版本或约束 |
+| 公开发布组件 | 冻结版本 |
 | --- | --- |
-| npm CLI `@openai/codex` | 已发布 `0.158.0` |
-| npm TypeScript SDK `@openai/codex-sdk` | 已发布 `0.158.0`；tag 中 `sdk/typescript/package.json` 为源码占位 `0.0.0-dev` |
-| Python SDK `openai-codex` | tag 中 `sdk/python/pyproject.toml` 为源码占位 `0.0.0-dev` |
-| Python runtime `openai-codex-cli-bin` | tag 中 SDK 依赖固定为 `0.153.4`；#15 复核公开发布的 SDK `0.158.0` wheel 实际依赖 runtime `0.158.0`，版本已配对，但默认 runtime 不含本仓库补丁 |
+| CLI `@openai/codex` | `0.159.2` |
+| TypeScript SDK `@openai/codex-sdk` | `0.159.2` |
+| Python SDK `openai-codex` | `0.159.2` |
+| Python runtime `openai-codex-cli-bin` | `0.159.2` |
 
-以上是 release/tag、包注册表和仓库源码的不同版本视角，不能把源码占位版本当作发布版本，也不能把 Python 的旧 runtime pin 当作已验证兼容的新引擎。基线票 #7 只验证 CLI 和 app-server initialize；#8/#9 的独立补丁验证路由与会话绑定，不声称 GLM 请求或 SDK 行为已经适配。
+上述注册表版本已在 #6 的 0.159 resolution 中核实。tag 中 CLI/workspace 的 `0.0.0`、SDK 的
+`0.0.0-dev` 等源码占位版本不代表发布版本；最终组合引擎应报告 `0.159.2`，由 #29/#30 迁移和
+#31/#16 构建验收验证。包版本一致也不能证明默认 runtime 含本仓库补丁。
+SDK 测试依赖目前仍保留历史 `0.158.0` pin；升级和公开 API 验收由 #32/#33 承接。
+tag 的 Python 源码依赖仍写 `openai-codex-cli-bin==0.153.4`，不能据此覆盖已核实的
+公开 wheel/runtime `0.159.2` 版本记录。
 
-在干净的 `rust-v0.158.0` checkout 上执行：
+## 仅验证冻结源码
+
+本机串行复用 `E:\Projects\codex`，分支 `codex/multiprovider-0.159.2`。保留原
+`multiprovider-routing` 分支及忽略的 `work/asar-tools`，不另 clone 或创建 engine worktree。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -EnginePath C:\path\to\codex -Profile debug
-$env:CODEX_TEST_UPSTREAM_CHECKOUT = 'C:\path\to\codex'
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -BaselineOnly -VerifyOnly -EnginePath E:\Projects\codex
+$env:CODEX_TEST_UPSTREAM_CHECKOUT = 'E:\Projects\codex'
 node --test tools/engine-baseline.test.mjs
 ```
 
-测试从安装入口构建 CLI，核对 `codex --version`，经原版 `codex app-server` 的 stdio JSON-RPC 完成 initialize，并确认上游 checkout 未留下改动。Windows 构建需要 MSVC Rust toolchain；首次 Cargo 构建较慢。之后移植新路由补丁时，再更新默认安装路径和交付矩阵。
+此入口只需要 Git：先检查完整 HEAD 与干净状态，再退出；不应用补丁，不调用 Rust/Cargo，不构建
+stock CLI。错误 SHA、Git 读取失败或脏源码均拒绝，不自动切换分支、重置或丢弃用户文件。
+稳定基线模式要求显式 `-EnginePath`，不接受 `-WorkDir` 或另建引擎。省略 `-VerifyOnly`
+仍是显式 stock 构建入口，但本轮不执行，最终启动和 initialize 使用后续唯一组合产物验收。
 
-## 父代理完成通知增量补丁（#12）
-
-[`patch/parent-completion.patch`](../patch/parent-completion.patch) 独立针对上述 `rust-v0.158.0` SHA，不包含旧版供应商路由补丁。它给 `[agents]` 增加 `wake_parent_on_completion`（默认 `true`）：子代理成功、错误或中断后向直接父代理投递一次结果；开启时唤醒有执行容量的空闲父代理，关闭、容量不足或父代理正在运行时只排队。它不修改 Microsoft Store 客户端，也不使 `-BaselineOnly` 变成多供应商构建。
-
-在**干净的**固定版本开源引擎 checkout 中单独应用和验证：
+## 新版组合安装与尚未完成的验证
 
 ```powershell
-git -C C:\path\to\codex apply --check C:\path\to\codex-multiprovider\patch\parent-completion.patch
-git -C C:\path\to\codex apply C:\path\to\codex-multiprovider\patch\parent-completion.patch
-cd C:\path\to\codex\codex-rs
-just test -p codex-app-server parent_completion_wake
-just test -p codex-core load_config_resolves_agent_controls
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/install-engine.ps1 -CombinedPatch -EnginePath E:\Projects\codex -Profile debug
 ```
 
-此补丁暂不由默认 `install-engine.ps1` 自动应用；后续路由补丁迁移票再处理组合构建与安装入口。
+这是为新版四补丁组合保留的明确入口，目前会报错说明 **0.159.2 补丁尚未迁移**，不会套用
+0.158/0.154 diff。#29 迁移路由、会话、分叉、子代理绑定；#30 迁移父代理完成通知与唤醒，
+随后接通此入口与新版稳定补丁 CI job。它们的关闭仅表示补丁生成、按序适用性和差异审查完成。
 
-## 分叉线程供应商绑定增量补丁（#10）
+#31 将四份补丁按序应用到冻结 SHA，复用 E 盘唯一 Cargo target，增量构建一次 debug CLI，
+执行 focused Rust 与 GLM 离线工具闭环；#32/#33 复用该 binary 测双 SDK；#16 集中验收完整
+Windows 矩阵。不要逐票 cargo clean、release 构建或跑整个上游 Rust workspace。
+源码/补丁指纹变化时重新增量构建并重验受影响行为。
 
-[`patch/fork-provider-binding-0.158.patch`](../patch/fork-provider-binding-0.158.patch) 以 #8/#9 的
-`model-provider-routes-0.158.patch` 为前置，针对同一 `rust-v0.158.0` SHA。它在 fork 时继承来源线程
-的供应商和最后模型，拒绝显式跨供应商选择；`codex exec fork` 只传递 CLI 中显式选择的模型/供应商，
-不会把变化后的配置默认值误当成覆盖。持久分叉可按原供应商恢复。
+CLI 版本与 stdio app-server initialize 的独立轻量运行入口保留在
+`tools/engine-initialize.test.mjs`，设置 `CODEX_TEST_ROUTED_BINARY` 为后续组合产物后运行。
+#28 没有构建、启动 CLI 或验证 initialize，没有 0.159 路由/绑定/唤醒/GLM/SDK 行为通过结论。
+真实在线验收仍需逐服务身份授权，本票只使用源码与离线测试。
 
-在干净 checkout 中依次 `git apply --check`、`git apply` 两个补丁后构建 `codex-cli`，并用构建出的
-`codex.exe` 设置 `CODEX_TEST_ROUTED_BINARY` 运行 `node --test tools/model-routing.test.mjs`。
-目前安装脚本的 `-RoutingPatch` 只应用第一份补丁；增量补丁需要手动应用并重新构建，不修改
-Microsoft Store 引擎。
+## CI 与历史边界
 
-## 子代理供应商绑定增量补丁（#11）
+- PR 自动工作流 `patch-applies.yml` 只运行 Windows 轻量版本、安装脚本、语法和适用性检查，
+  只触发 `pull_request`（另可手动触发），无 push/PR 重复运行，无 Linux runner。
+- 新版基线 job 验证 0.159.2 元数据和干净源码，不声称新版补丁适用性已通过。
+- `historical-154-patch-applies` 与 `historical-158-binding-patches-apply` 明确检查旧 SHA。
+  对旧固定 SHA 的适用性通过仅是历史回归，不能替代新版检查。
+- `model-routing.yml` 保留 Windows 重型构建和关键行为测试，仅 `workflow_dispatch`；
+  当前仍是明确标识的 0.158 历史验收，具有增量缓存及并发取消。#29/#30 再 retarget 到新版补丁。
+  本轮最终重型行为证据来自 #31/#16 的本机 Windows 验收，PR 自动 CI 不重复编译 Rust。
 
-[`patch/subagent-provider-binding-0.158.patch`](../patch/subagent-provider-binding-0.158.patch)
-依次以前述 0.158 路由和分叉补丁为前置。它在 `spawn_agent` 解析显式模型、角色默认和系统默认模型后、
-创建子线程前检查目标供应商是否等于父线程供应商；拒绝时报告模型、目标及父供应商。已有
-`-RoutingPatch` 安装入口仍只应用第一份补丁，因此需手动依序应用三份补丁并重新构建。
-`model-routing.yml` 在 Windows 和 Linux 上检查组合补丁、Rust 子代理 seam 和模拟供应商 CLI 行为。
-
-## Z.AI Coding Plan Responses 离线验收（#13）
-
-在固定 `064c6b8c737f5b41d171fdda80bd9ef10ad06eb3` 基线上，按顺序应用上面的
-`model-provider-routes-0.158.patch`、`fork-provider-binding-0.158.patch`、
-`subagent-provider-binding-0.158.patch` 和 `parent-completion.patch`。这张票的
-Responses 直连无需额外引擎或代理补丁：`config/zai-coding-plan.config-snippet.toml`
-将 `glm-5.3-flash` 约束到独立的 Coding Plan 服务身份，
-`config/zai-models.json` 仅在目录中暴露 `low/high/max`，默认 `max`。
-
-用构建的 patched `codex` 设置 `CODEX_TEST_ROUTED_BINARY`，运行
-`node --test tools/glm-responses.test.mjs`。测试用隔离的 `CODEX_HOME`、假凭据和
-127.0.0.1 HTTP mock，不接触真实 Z.AI 或用户引擎。覆盖最终 `/api/v1/responses`
-路径、文本与 SSE 完成、工具 `call_id` 及结果续轮、第二轮、缺尾、字段拒绝、
-401/403/429/503、取消和诊断脱敏。CI 在 Linux/Windows x64 构建并运行此测试。
-这只证明离线协议行为；Coding Plan 在线兼容及普通按量服务身份资格均未验证。
-
-## Python SDK 离线验收（#15）
-
-公开 PyPI `openai-codex==0.158.0` 通过 `CodexConfig(codex_bin=...)` 指向上述
-固定 SHA 的四补丁组合引擎。初始化、线程、轮次、实时 delta 通知、跨进程恢复、
-fork 继承供应商和错误路径均走真实 app-server；HTTP 供应商使用无真实密钥的本地 mock。
-未修改 SDK 源码。发布 wheel 的 runtime pin 已为 `0.158.0`，不能用 tag 中旧 pin
-推断发布包不兼容，也不能用版本相同推断默认 runtime 已含补丁。
-运行命令、独立类型检查及验收边界见 [Python SDK 测试说明](../tools/sdk/python/README.md)。
+0.158 的已完成票、补丁及报告保留，完整原始范围见
+[0.158 历史基线与验收](engine-baseline-0.158.md)，仅对应
+`064c6b8c737f5b41d171fdda80bd9ef10ad06eb3`。
+`-RoutingPatch` 仍明确是历史 0.158 单路由补丁模式；不传稳定模式仍是历史 0.154 默认安装，
+固定 `1715e55076737158ba61d43158ede504de6d4ce1`。它们都拒绝 0.159 checkout。
+本票不改变 Microsoft Store 桌面端或用户已有上游分支。

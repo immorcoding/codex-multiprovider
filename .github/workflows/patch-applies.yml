@@ -1,87 +1,90 @@
-name: patch applies
+name: Windows baseline and historical patch applicability
 
-# Guards the one thing that silently rots in a patch repository: the day the upstream commit this
-# patch was generated against no longer accepts it.
 on:
-  push:
   pull_request:
   workflow_dispatch:
-  schedule:
-    # Weekly, so drift is noticed even without a push.
-    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lightweight-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  patch-applies:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+  baseline-159-source:
+    name: Frozen 0.159.2 source and scripts (no Rust build)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch the frozen source from the shared metadata
+        run: |
+          $baseline = Get-Content -Raw config/engine-baseline.json | ConvertFrom-Json
+          git init upstream
+          if ($LASTEXITCODE -ne 0) { throw 'git init failed' }
+          git -C upstream remote add origin https://github.com/openai/codex.git
+          if ($LASTEXITCODE -ne 0) { throw 'remote add failed' }
+          git -C upstream fetch --depth 1 origin $baseline.sourceSha
+          if ($LASTEXITCODE -ne 0) { throw 'fetch failed' }
+          git -C upstream checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'checkout failed' }
+      - name: Verify release pins and installer rejection conditions without compiling
+        run: |
+          $env:CODEX_TEST_UPSTREAM_CHECKOUT = Join-Path $env:GITHUB_WORKSPACE 'upstream'
+          node --test tools/engine-baseline.test.mjs tools/proxy-transforms.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'lightweight tests failed' }
+      - name: Check PowerShell and JavaScript syntax
+        run: ./tools/check-scripts.ps1
+
+  historical-154-patch-applies:
+    name: Historical 0.154 patch applicability only
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     env:
-      # Must be a full 40-character SHA: `git fetch origin <sha>` cannot resolve short forms.
       PIN_SHA: 1715e55076737158ba61d43158ede504de6d4ce1
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check the README pins the same commit as this workflow
+      - name: Fetch the historical source and require its expected tree
         run: |
           set -euo pipefail
-          if ! grep -q "$PIN_SHA" README.md; then
-            echo "::error::README.md does not mention the pinned commit $PIN_SHA"
-            exit 1
-          fi
-          echo "README and workflow agree on $PIN_SHA"
-
-      - name: Fetch exactly that commit from openai/codex
-        run: |
-          set -euo pipefail
+          grep -q "$PIN_SHA" README.md
           git init upstream
           git -C upstream remote add origin https://github.com/openai/codex.git
-          if ! git -C upstream fetch --depth 1 origin "$PIN_SHA"; then
-            echo "fetch by SHA failed; falling back to a blobless clone"
-            rm -rf upstream
-            git clone --filter=blob:none --no-checkout https://github.com/openai/codex.git upstream
-            git -C upstream fetch origin "$PIN_SHA"
-          fi
+          git -C upstream fetch --depth 1 origin "$PIN_SHA"
           git -C upstream checkout --detach FETCH_HEAD
-
-      - name: Verify the checkout is real
-        run: |
-          set -euo pipefail
-          actual="$(git -C upstream rev-parse HEAD)"
-          if [ "$actual" != "$PIN_SHA" ]; then
-            echo "::error::checked out $actual, expected $PIN_SHA"
-            exit 1
-          fi
-          # Without this, `git apply --check` in an empty tree can pass vacuously.
+          test "$(git -C upstream rev-parse HEAD)" = "$PIN_SHA"
           test -f upstream/codex-rs/Cargo.toml
           test -f upstream/codex-rs/core/src/config/mod.rs
-          echo "checked out $actual with the expected tree"
-
-      - name: Check the patch applies cleanly
+      - name: Check and apply the historical patch
         run: |
           set -euo pipefail
-          git -C upstream apply --check --verbose "$GITHUB_WORKSPACE/patch/model-provider-routes.patch"
-
-      - name: Apply it and require the expected files to change
-        run: |
-          set -euo pipefail
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patch/model-provider-routes.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/model-provider-routes.patch"
-          # Count with status, not diff: the patch also adds a new file, and untracked files do not
-          # appear in `git diff`.
           changed="$(git -C upstream status --porcelain | wc -l)"
-          echo "changed or added files: $changed"
-          git -C upstream diff --stat | tail -n 1
-          if [ "$changed" -lt 10 ]; then
-            echo "::error::expected the patch to touch or add at least 10 files, saw $changed"
-            exit 1
-          fi
+          test "$changed" -ge 10
 
-  stable-binding-patches-apply:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+  historical-158-binding-patches-apply:
+    name: Historical 0.158 combination applicability only (not 0.159)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     env:
       PIN_SHA: 064c6b8c737f5b41d171fdda80bd9ef10ad06eb3
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch the stable source and apply routing then fork binding
+      - name: Fetch the historical source and apply the four patches in order
         run: |
           set -euo pipefail
           git init upstream

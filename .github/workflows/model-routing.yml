@@ -1,27 +1,30 @@
-name: model routing and session binding on stable engine
+name: Historical 0.158 Windows model routing (manual heavy validation)
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-routing-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   routing:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     timeout-minutes: 90
     defaults:
       run:
         shell: bash
     env:
+      # Historical source only; #29/#30 will retarget after patch migration.
       PIN_SHA: 064c6b8c737f5b41d171fdda80bd9ef10ad06eb3
     steps:
       - uses: actions/checkout@v4
       - name: Fetch clean stable engine
         run: |
+          set -euo pipefail
           git init upstream
           git -C upstream remote add origin https://github.com/openai/codex.git
           git -C upstream fetch --depth 1 origin "$PIN_SHA"
@@ -30,6 +33,7 @@ jobs:
           test -z "$(git -C upstream status --porcelain)"
       - name: Apply routing, session, fork, subagent, and parent-completion patches
         run: |
+          set -euo pipefail
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/model-provider-routes-0.158.patch"
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/fork-provider-binding-0.158.patch"
@@ -38,9 +42,17 @@ jobs:
           git -C upstream apply "$GITHUB_WORKSPACE/patch/subagent-provider-binding-0.158.patch"
           git -C upstream apply --check "$GITHUB_WORKSPACE/patch/parent-completion.patch"
           git -C upstream apply "$GITHUB_WORKSPACE/patch/parent-completion.patch"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: upstream/codex-rs -> target
+          shared-key: historical-158-windows-debug
       - name: Build and check the patched crates
         working-directory: upstream/codex-rs
         run: |
+          set -euo pipefail
           cargo check -p codex-config -p codex-core -p codex-app-server -p codex-exec
           cargo build -p codex-cli --bin codex
       - name: Test subagent binding at the shared spawn seam
@@ -55,14 +67,15 @@ jobs:
         run: cargo test -p codex-app-server parent_completion_wake -- --test-threads=1
       - name: Run mock-provider app-server and exec behavior tests
         env:
-          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex${{ runner.os == 'Windows' && '.exe' || '' }}
+          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex.exe
         run: node --test tools/model-routing.test.mjs tools/glm-responses.test.mjs
       - name: Install pinned published TypeScript SDK test dependencies
         run: npm ci --prefix tools/sdk
       - name: Typecheck public SDK calls and exercise patched CLI through SDK
         env:
-          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex${{ runner.os == 'Windows' && '.exe' || '' }}
+          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex.exe
         run: |
+          set -euo pipefail
           npm run typecheck --prefix tools/sdk
           npm test --prefix tools/sdk
       - uses: actions/setup-python@v5
@@ -73,7 +86,8 @@ jobs:
       - name: Typecheck Python SDK calls and exercise patched app-server
         timeout-minutes: 5
         env:
-          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex${{ runner.os == 'Windows' && '.exe' || '' }}
+          CODEX_TEST_ROUTED_BINARY: ${{ github.workspace }}/upstream/codex-rs/target/debug/codex.exe
         run: |
+          set -euo pipefail
           python -m mypy --strict tools/sdk/python/public_api.py
           python -m pytest -q tools/sdk/python
