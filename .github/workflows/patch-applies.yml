@@ -1,4 +1,4 @@
-name: Windows baseline and historical patch applicability
+name: Windows baseline, 0.159 bindings and historical patch applicability
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   baseline-159-source:
-    name: Frozen 0.159.2 source and scripts (no Rust build)
+    name: Frozen 0.159.2 source, binding patches and scripts (no Rust build)
     runs-on: windows-latest
     timeout-minutes: 15
     defaults:
@@ -38,8 +38,10 @@ jobs:
       - name: Verify release pins and installer rejection conditions without compiling
         run: |
           $env:CODEX_TEST_UPSTREAM_CHECKOUT = Join-Path $env:GITHUB_WORKSPACE 'upstream'
-          node --test tools/engine-baseline.test.mjs tools/proxy-transforms.test.mjs
+          node --test --test-concurrency=1 tools/engine-baseline.test.mjs tools/binding-patches.test.mjs tools/proxy-transforms.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'lightweight tests failed' }
+      - name: Check and apply the three 0.159 binding patches in shared order (no Rust)
+        run: ./tools/install-engine.ps1 -BindingPatchesOnly -EnginePath (Join-Path $env:GITHUB_WORKSPACE 'upstream')
       - name: Check PowerShell and JavaScript syntax
         run: ./tools/check-scripts.ps1
 

@@ -9,6 +9,8 @@ import readline from 'node:readline';
 import test from 'node:test';
 
 const binary = process.env.CODEX_TEST_ROUTED_BINARY;
+// #31 runs this public-interface suite once against the 0.159 combined debug CLI.
+// #29 checks syntax/applicability only; no model name here implies online availability.
 
 async function fixture(run) {
   const home = mkdtempSync(path.join(tmpdir(), 'codex-mp-route-'));
@@ -231,10 +233,12 @@ test('app-server sends the configured mapped model to its route and an unmapped 
       await rpc('turn/start', { threadId: defaulted.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
       await expectRequest(requests, '/v1/responses', 'routed-model');
 
-      const unmapped = await rpc('thread/start', { ...common, model: 'unmapped-model' });
-      assert.equal(unmapped.modelProvider, 'openai');
-      await rpc('turn/start', { threadId: unmapped.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
-      await expectRequest(requests, '/v1/default/responses', 'unmapped-model');
+      for (const model of ['unmapped-model', 'gpt-6.1-sol']) {
+        const unmapped = await rpc('thread/start', { ...common, model });
+        assert.equal(unmapped.modelProvider, 'openai');
+        await rpc('turn/start', { threadId: unmapped.thread.id, input: [{ type: 'text', text: 'ping', text_elements: [] }] });
+        await expectRequest(requests, '/v1/default/responses', model);
+      }
     });
   });
 });
@@ -251,10 +255,12 @@ test('codex exec sends the routed model to the configured mock provider', { time
 test('codex exec keeps an unmapped model on the configured default provider', { timeout: 90_000 }, async () => {
   assert.ok(binary, 'Set CODEX_TEST_ROUTED_BINARY to the built codex.exe');
   await fixture(async ({ home, cwd, requests, configure }) => {
-    configure({ model: 'unmapped-model', mockOpenAiDefault: true });
-    const result = await exec(binary, home, cwd);
-    assert.ok(requests.some((request) => request.url === '/v1/default/responses' && request.body?.model === 'unmapped-model'), `${JSON.stringify(requests)}\n${result.stdout}\n${result.stderr}`);
-    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    for (const model of ['unmapped-model', 'gpt-6.1-sol']) {
+      configure({ model, mockOpenAiDefault: true });
+      const result = await exec(binary, home, cwd);
+      assert.ok(requests.some((request) => request.url === '/v1/default/responses' && request.body?.model === model), `${JSON.stringify(requests)}\n${result.stdout}\n${result.stderr}`);
+      assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    }
   });
 });
 
@@ -289,6 +295,12 @@ test('turn/start keeps the session provider while allowing a model on the same p
         rpc('turn/start', { threadId: started.thread.id, model: 'unmapped-model', input: [{ type: 'text', text: 'ping', text_elements: [] }] }),
         /unmapped-model.*openai.*mock_route/,
       );
+      await assert.rejects(
+        rpc('turn/start', { threadId: started.thread.id, model: 'same-provider-model',
+          collaborationMode: { mode: 'default', settings: { model: 'other-provider-model', reasoning_effort: null, developer_instructions: null } },
+          input: [{ type: 'text', text: 'ping', text_elements: [] }] }),
+        /other-provider-model.*openai.*mock_route/,
+      );
       assert.equal(requests.filter((request) => request.url === '/v1/default/responses').length, 0);
     });
   });
@@ -307,6 +319,11 @@ test('thread/settings/update accepts same-provider model and rejects cross-provi
       await expectNotification(notifications, 'turn/completed');
       await assert.rejects(
         rpc('thread/settings/update', { threadId: started.thread.id, model: 'other-provider-model' }),
+        /other-provider-model.*openai.*mock_route/,
+      );
+      await assert.rejects(
+        rpc('thread/settings/update', { threadId: started.thread.id,
+          collaborationMode: { mode: 'default', settings: { model: 'other-provider-model', reasoning_effort: null, developer_instructions: null } } }),
         /other-provider-model.*openai.*mock_route/,
       );
       assert.equal(requests.filter((request) => request.url === '/v1/default/responses').length, 0);

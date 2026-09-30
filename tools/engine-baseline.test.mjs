@@ -80,11 +80,15 @@ test('stable modes require an existing checkout and unambiguous options', () => 
     ['-BaselineOnly', '-VerifyOnly', '-EnginePath', checkout, '-WorkDir', 'unused-engine'],
     ['-BaselineOnly', '-CombinedPatch', '-EnginePath', checkout],
     ['-BaselineOnly', '-RoutingPatch', '-EnginePath', checkout],
+    ['-BindingPatchesOnly'],
+    ['-BindingPatchesOnly', '-WorkDir', 'unused-engine', '-EnginePath', checkout],
+    ['-BindingPatchesOnly', '-CombinedPatch', '-EnginePath', checkout],
+    ['-BindingPatchesOnly', '-RoutingPatch', '-EnginePath', checkout],
     ['-VerifyOnly', '-EnginePath', checkout],
   ]) {
     const result = install(...args);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /requires|cannot be combined/);
+    assert.match(result.stderr, /requires?|cannot be combined/);
   }
 });
 
