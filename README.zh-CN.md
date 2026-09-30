@@ -78,6 +78,10 @@ Python 异步对等与 Python 父/子代理策略仍未验。
 
 ## Z.AI Coding Plan / GLM-5.3-Flash（仅离线 mock）
 
+可复用验收入口为 `tools/test-glm.ps1 -Service coding-plan` 或 `-Service payg`，默认只跑本地 mock、
+不需要 key。真实调用必须明确确认、设置有限请求预算并分别确认服务资格。
+见[可复用 CLI/双 SDK 验收说明](docs/glm-online-acceptance.md)；在线 #17/#18 仍未验证。
+
 当前 0.159.2 CLI 在 `ff6aec96948b70d94983af2641a6b67c94faeff5` 上使用
 `config/binding-patches-0.159.json` 的有序四补丁；GLM Responses 离线直连通过，
 无需 GLM 适配或 DeepSeek 专属转换。详见[#31 验收与产物交接](docs/glm-responses-validation-0.159.md)。

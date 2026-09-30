@@ -91,6 +91,11 @@ or desktop integration additions.
 
 ## Z.AI Coding Plan / GLM-5.3-Flash (offline mock only)
 
+Reusable Windows acceptance is available through `tools/test-glm.ps1 -Service coding-plan` or
+`-Service payg`. The default runs local mocks without credentials; live calls require explicit
+confirmation, a finite request budget, and separate service qualification. See the
+[reusable CLI/SDK acceptance guide](docs/glm-online-acceptance.md). Online #17/#18 remain unverified.
+
 The current 0.159.2 CLI uses the four patches in `config/binding-patches-0.159.json` on
 `ff6aec96948b70d94983af2641a6b67c94faeff5`. Its GLM Responses contract passes offline without
 a GLM adapter or DeepSeek compatibility proxy; see [the #31 validation and artifact handoff](docs/glm-responses-validation-0.159.md).

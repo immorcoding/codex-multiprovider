@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["public-api.ts"]
+  "include": ["public-api.ts", "../glm-acceptance/typescript-probe.mjs"]
 }
