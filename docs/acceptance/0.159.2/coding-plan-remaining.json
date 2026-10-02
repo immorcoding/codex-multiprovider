@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "mode": "live",
+  "profile": "coding-plan",
+  "status": "passed",
+  "requests": 9,
+  "steps": [
+    {
+      "case": "text-high",
+      "status": "passed",
+      "startedAt": "2026-09-30T20:14:54.119Z",
+      "completedAt": "2026-09-30T20:14:59.377Z",
+      "durationSeconds": 5.258
+    },
+    {
+      "case": "text-max",
+      "status": "passed",
+      "startedAt": "2026-09-30T20:14:59.377Z",
+      "completedAt": "2026-09-30T20:15:04.144Z",
+      "durationSeconds": 4.767
+    },
+    {
+      "case": "tool-loop",
+      "status": "passed",
+      "startedAt": "2026-09-30T20:15:04.144Z",
+      "details": {
+        "probe": "tool-call-and-second-turn",
+        "provider": "zai_coding_plan",
+        "model": "glm-5.3-flash",
+        "initialize": true,
+        "streamDeltaBeforeCompletion": true,
+        "callIdBound": true,
+        "toolCalls": 1,
+        "toolResultUsed": true,
+        "secondTurn": true,
+        "pass": true,
+        "wireCallIdBound": true
+      },
+      "completedAt": "2026-09-30T20:15:17.728Z",
+      "durationSeconds": 13.584
+    },
+    {
+      "case": "typescript",
+      "status": "passed",
+      "startedAt": "2026-09-30T20:15:17.728Z",
+      "details": {
+        "probe": "typescript-sdk",
+        "sdkVersion": "0.159.2",
+        "streamConsumed": true,
+        "completed": 1,
+        "persistedResume": true,
+        "pass": true
+      },
+      "completedAt": "2026-09-30T20:15:23.935Z",
+      "durationSeconds": 6.207
+    },
+    {
+      "case": "python",
+      "status": "passed",
+      "startedAt": "2026-09-30T20:15:23.935Z",
+      "details": {
+        "probe": "python-sdk",
+        "sdkVersion": "0.159.2",
+        "runtimeVersion": "0.159.2",
+        "deltaBeforeCompleted": true,
+        "completed": 1,
+        "persistedResume": true,
+        "pass": true
+      },
+      "completedAt": "2026-09-30T20:15:34.397Z",
+      "durationSeconds": 10.462
+    }
+  ],
+  "observations": [
+    {
+      "model": "glm-5.3-flash",
+      "effort": "high",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "max",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    },
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    }
+  ],
+  "selectedCases": [
+    "text-high",
+    "text-max",
+    "tool-loop",
+    "typescript",
+    "python"
+  ],
+  "liveCompatibility": "selected-cases-only",
+  "matrixComplete": false,
+  "limits": {
+    "maxRequests": 9,
+    "timeoutMs": 120000,
+    "currencyCap": null
+  },
+  "startedAt": "2026-09-30T20:14:48.623Z",
+  "issue": 17,
+  "artifact": {
+    "version": "codex-cli 0.159.2",
+    "sourceSha": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+    "patchTree": "1f419cca875711ec60c723b78eae465c8fa6a47c",
+    "binarySha256": "23405b52983bfb275f50500ccea8821af0e9d5889197e3978f1300f45606bb41"
+  },
+  "remoteRequests": 9,
+  "completedAt": "2026-09-30T20:15:34.398Z",
+  "notRunCases": [],
+  "reportPath": "E:\\Projects\\codex-multiprovider\\work\\glm-acceptance-coding-plan-EoG7mY\\report.json"
+}
