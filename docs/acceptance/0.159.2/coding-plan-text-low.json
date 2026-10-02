@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "mode": "live",
+  "profile": "coding-plan",
+  "status": "passed",
+  "requests": 1,
+  "steps": [
+    {
+      "case": "text-low",
+      "status": "passed",
+      "startedAt": "2026-09-30T20:12:17.128Z",
+      "completedAt": "2026-09-30T20:12:22.447Z",
+      "durationSeconds": 5.319
+    }
+  ],
+  "observations": [
+    {
+      "model": "glm-5.3-flash",
+      "effort": "low",
+      "status": 200
+    }
+  ],
+  "selectedCases": [
+    "text-low"
+  ],
+  "liveCompatibility": "selected-cases-only",
+  "matrixComplete": false,
+  "limits": {
+    "maxRequests": 1,
+    "timeoutMs": 120000,
+    "currencyCap": null
+  },
+  "startedAt": "2026-09-30T20:12:12.092Z",
+  "issue": 17,
+  "artifact": {
+    "version": "codex-cli 0.159.2",
+    "sourceSha": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+    "patchTree": "1f419cca875711ec60c723b78eae465c8fa6a47c",
+    "binarySha256": "23405b52983bfb275f50500ccea8821af0e9d5889197e3978f1300f45606bb41"
+  },
+  "remoteRequests": 1,
+  "completedAt": "2026-09-30T20:12:22.448Z",
+  "notRunCases": [],
+  "reportPath": "E:\\Projects\\codex-multiprovider\\work\\glm-acceptance-coding-plan-I8DvYW\\report.json"
+}
